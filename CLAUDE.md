@@ -7,7 +7,49 @@ https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 
 ## Status
 
-Early design. No code yet. See `BACKLOG.md` for what's next.
+Early design, plus an experimental terminal prototype (below). See
+`BACKLOG.md` for what's next.
+
+## Prototype: terminal chat with Captain for retrieval
+
+```
+cp .env.example .env    # add ANTHROPIC_API_KEY and CAPTAIN_API_KEY
+uv run llm-pkm          # PKM_STORE=local runs offline, no Captain needed
+uv run pytest
+```
+
+Layout (`src/llm_pkm/`):
+
+- `core.py`: `Assistant.handle_message(text, history) -> reply`. The only
+  entry point; no terminal or HTTP code, so the CLI and Lambda share it.
+- `llm.py`: the system prompt, the `remember` / `recall` tools, and the tool
+  loop. Claude decides whether a message is a fact or a question. The same
+  two tools are meant to become MCP tools for the Claude app later.
+- `stores/`: the `MemoryStore` interface (`add`, `search`), with
+  `CaptainStore` and `LocalStore` implementations. Swapping Captain for an
+  AWS vector store means writing one new file here.
+- `stores/local.py` also serves as the raw fact log (`data/facts.jsonl`,
+  git-ignored). Every fact is written there whichever store is active, so
+  the data never lives only inside Captain.
+- `config.py`: all settings from env vars (see `.env.example`).
+- `cli.py`: the terminal loop. `lambda_handler.py`: an untested sketch of the
+  Lambda entry point (the client passes the history in each request).
+
+Things we learned:
+
+- **Captain** (docs.captain.dev) returns matching chunks, not answers, so
+  Claude does the answering. Indexing runs in the background (you get a job
+  ID back), so `CaptainStore.add` waits for the job to finish before the bot
+  says "got it". Each fact is indexed as its own tiny text document, an
+  unusual fit for a service built to index files. Captain is a candidate for
+  the long-term store; not decided.
+- **Model:** `claude-opus-5` at effort `low` by default (`PKM_MODEL`,
+  `PKM_EFFORT`), with server-side refusal fallback enabled.
+- **Search wording:** the local store's keyword search misses synonyms
+  ("married to" vs "wife"). The prompt tells Claude to retry `recall` with
+  other wording, which fixed it in testing.
+- The chatbot only remembers what is in the store. Conversation history is
+  kept for the current session only.
 
 ## The idea
 

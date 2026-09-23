@@ -1,0 +1,25 @@
+[project]
+name = "llm-pkm"
+version = "0.1.0"
+description = "Voice/text-fed personal knowledge store with natural-language recall"
+authors = [
+    { name = "Bruce Schechter", email = "bruce@schechter.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "anthropic>=1.8.0",
+    "httpx>=0.28.1",
+    "python-dotenv>=1.2.3",
+]
+
+[project.scripts]
+llm-pkm = "llm_pkm:main"
+
+[build-system]
+requires = ["uv_build>=0.11.4,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
