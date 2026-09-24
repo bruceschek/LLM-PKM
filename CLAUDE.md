@@ -16,6 +16,7 @@ Early design, plus an experimental terminal prototype (below). See
 cp .env.example .env    # add ANTHROPIC_API_KEY and CAPTAIN_API_KEY
 uv run llm-pkm          # PKM_STORE=local runs offline, no Captain needed
 uv run pytest
+uv run pkm-timings      # median/max time per step, from data/timings.jsonl
 ```
 
 Layout (`src/llm_pkm/`):
@@ -32,6 +33,9 @@ Layout (`src/llm_pkm/`):
   git-ignored). Every fact is written there whichever store is active, so
   the data never lives only inside Captain.
 - `config.py`: all settings from env vars (see `.env.example`).
+- `timing.py`: per-step timings. Code wraps a step in `span("name")`; the
+  CLI prints each message's breakdown (`PKM_TIMING=0` hides it) and every
+  message is logged to `data/timings.jsonl`.
 - `cli.py`: the terminal loop. `lambda_handler.py`: an untested sketch of the
   Lambda entry point (the client passes the history in each request).
 
@@ -39,10 +43,16 @@ Things we learned:
 
 - **Captain** (docs.captain.dev) returns matching chunks, not answers, so
   Claude does the answering. Indexing runs in the background (you get a job
-  ID back), so `CaptainStore.add` waits for the job to finish before the bot
-  says "got it". Each fact is indexed as its own tiny text document, an
+  ID back). In the CLI, `CaptainStore` waits for the job on a worker thread,
+  so the bot says "got it" right away; how the save ended, with its timing,
+  is printed after the user's next entry. Elsewhere (the Lambda sketch),
+  `add` waits for the job before returning. Each fact is indexed as its own tiny text document, an
   unusual fit for a service built to index files. Captain is a candidate for
   the long-term store; not decided.
+- **Captain indexing is slow for our use** (measured 2026-09-23): 9 to 14 s
+  of Captain-side processing per one-sentence fact, no queue time. Its text
+  pipeline writes a summary and tags for each section before embedding, and
+  the docs offer no faster mode. Search is fast (about 0.5 s).
 - **Model:** `claude-opus-5` at effort `low` by default (`PKM_MODEL`,
   `PKM_EFFORT`), with server-side refusal fallback enabled.
 - **Search wording:** the local store's keyword search misses synonyms

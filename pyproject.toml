@@ -14,6 +14,7 @@ dependencies = [
 
 [project.scripts]
 llm-pkm = "llm_pkm:main"
+pkm-timings = "llm_pkm.timing:main"
 
 [build-system]
 requires = ["uv_build>=0.11.4,<0.12.0"]

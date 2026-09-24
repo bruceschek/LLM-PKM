@@ -7,6 +7,7 @@ from collections.abc import Callable
 import anthropic
 
 from .config import Settings
+from .timing import span
 
 SYSTEM = """You are the user's personal memory. They tell you facts about their \
 life and later ask you about them.
@@ -75,18 +76,24 @@ def run_turn(
     tool-result message to `messages` (as plain dicts, so the history can be
     serialized, e.g. returned from a Lambda). Returns the reply text."""
     while True:
-        response = client.beta.messages.create(
-            model=settings.model,
-            max_tokens=16000,
-            system=SYSTEM,
-            tools=TOOLS,
-            messages=messages,
-            output_config={"effort": settings.effort},
-            # If Claude declines on safety grounds, retry on Anthropic's
-            # recommended fallback model instead of returning a refusal.
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-        )
+        with span("claude") as s:
+            response = client.beta.messages.create(
+                model=settings.model,
+                max_tokens=16000,
+                system=SYSTEM,
+                tools=TOOLS,
+                messages=messages,
+                output_config={"effort": settings.effort},
+                # If Claude declines on safety grounds, retry on Anthropic's
+                # recommended fallback model instead of returning a refusal.
+                betas=["server-side-fallback-2026-07-01"],
+                fallbacks="default",
+            )
+            s.info.update(
+                stop=response.stop_reason,
+                tokens_in=response.usage.input_tokens,
+                tokens_out=response.usage.output_tokens,
+            )
         if response.stop_reason == "refusal":
             return "Sorry, I can't help with that."
 

@@ -5,7 +5,10 @@ vector store later."""
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from ..timing import Turn
 
 
 @dataclass(frozen=True)
@@ -26,6 +29,15 @@ class Hit:
     text: str
     score: float
     created_at: str | None = None
+
+
+@dataclass(frozen=True)
+class Notice:
+    """The outcome of work a store finished in the background, for the user."""
+
+    message: str
+    failed: bool
+    turn: "Turn"  # timing of the background work
 
 
 class MemoryStore(Protocol):

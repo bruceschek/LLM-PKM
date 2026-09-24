@@ -16,6 +16,7 @@ class Settings:
     captain_org_id: str | None
     captain_collection: str
     captain_index_timeout: float
+    show_timing: bool  # print step timings after each reply
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -28,4 +29,5 @@ class Settings:
             captain_org_id=os.environ.get("CAPTAIN_ORG_ID"),
             captain_collection=os.environ.get("CAPTAIN_COLLECTION", "llm_pkm"),
             captain_index_timeout=float(os.environ.get("CAPTAIN_INDEX_TIMEOUT", "90")),
+            show_timing=os.environ.get("PKM_TIMING", "1") != "0",
         )

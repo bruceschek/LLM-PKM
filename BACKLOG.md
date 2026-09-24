@@ -8,6 +8,15 @@
      indexing takes, whether meaning-based search finds "married to" → wife,
      and credit cost per fact.
    - [ ] Decide whether Captain stays in the running as the long-term store.
+   - [x] Timing per step (`uv run pkm-timings`). Found that Captain takes
+     10 to 15 s to index each fact.
+   - [x] Saves finish in the background in the CLI, so "got it" comes back
+     without waiting for Captain.
+   - [ ] **Risk, parked:** a question asked in the ~15 s while a fact is
+     still indexing won't find it. Possible fix: have `recall` also search
+     the local fact log for facts whose indexing hasn't finished.
+   - [ ] Speed idea: when a message only saves facts, reply "Got it."
+     directly instead of making a second Claude call to write it.
 
 1. **Read and understand Karpathy's LLM Wiki gist** (Bruce)
    https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
@@ -29,9 +38,7 @@
    personal scale.
 5. Define the tool interface (e.g. `remember`, `recall`, `forget`, `lint`)
    and the data schema for a single fact.
-6. Build a local prototype (uv, Python 3.13) of capture and recall before
-   touching AWS.
-7. **Cloud version both developers can use, behind GitHub login.** A remote
+6. **Cloud version both developers can use, behind GitHub login.** A remote
    MCP server on Cloudflare Workers that the Claude app connects to. Users
    log in with GitHub, and only allowlisted usernames get in.
    Steps:
@@ -64,3 +71,5 @@
 ## Done
 
 - 2026-09-22: Created repo, `CLAUDE.md`, and `BACKLOG.md`.
+- 2026-09-23: First draft of the local prototype (uv, Python 3.13): capture
+  and recall in a terminal chat (`uv run llm-pkm`), before touching AWS.
