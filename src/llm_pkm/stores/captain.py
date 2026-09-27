@@ -1,23 +1,18 @@
 """Captain (https://docs.captain.dev) as the retrieval store.
 
 Each fact is indexed as its own small text document. Captain indexes in the
-background and returns a job ID, and indexing takes 10 to 15 seconds. By
-default add() waits for the job to finish, so a question asked straight
-after a fact finds it. With background=True (the CLI), add() returns at once
-and a worker thread waits instead; a question asked during that window can
-miss the newest fact.
+background and returns a job ID, and indexing takes 10 to 15 seconds; see
+IndexingStore for waiting on it in the foreground or the background.
 """
 
-import queue
-import threading
 import time
 from datetime import datetime
 
 import httpx
 
-from .. import timing
 from ..timing import span
-from .base import Fact, Hit, Notice
+from .background import IndexingStore
+from .base import Fact, Hit
 
 BASE_URL = "https://api.captain.dev"
 _DONE = {"completed", "completed_with_errors", "failed", "cancelled", "timed_out"}
@@ -41,7 +36,9 @@ def _job_timings(job: dict) -> dict:
     return out
 
 
-class CaptainStore:
+class CaptainStore(IndexingStore):
+    name = "Captain"
+
     def __init__(
         self,
         api_key: str,
@@ -50,18 +47,13 @@ class CaptainStore:
         index_timeout: float = 90,
         background: bool = False,
     ):
-        """With `background`, add() returns as soon as Captain accepts the
-        fact and the indexing wait moves to a worker thread; its outcome lands
-        on `self.notices`. Only for long-lived processes like the CLI: a
-        Lambda would be frozen before the thread finishes."""
+        super().__init__(background)
         headers = {"Authorization": f"Bearer {api_key}"}
         if org_id:
             headers["X-Organization-ID"] = org_id
         self.http = httpx.Client(base_url=BASE_URL, headers=headers, timeout=60)
         self.collection = collection
         self.index_timeout = index_timeout
-        self.background = background
-        self.notices: queue.Queue[Notice] = queue.Queue()
         self._ensure_collection()
 
     def _ensure_collection(self) -> None:
@@ -71,7 +63,7 @@ class CaptainStore:
         )
         response.raise_for_status()
 
-    def add(self, fact: Fact) -> str:
+    def _submit(self, fact: Fact) -> str:
         with span("captain.submit"):
             response = self.http.post(
                 f"/v2/collections/{self.collection}/index/text",
@@ -84,23 +76,7 @@ class CaptainStore:
             )
             response.raise_for_status()
             job_id = response.json()["job_id"]
-
-        if not self.background:
-            return self._wait_for_index(job_id)
-        threading.Thread(target=self._wait_in_background, args=(job_id, fact), daemon=True).start()
-        return "Saved; Captain is indexing it in the background."
-
-    def _wait_in_background(self, job_id: str, fact: Fact) -> None:
-        """Wait for the job on a worker thread and queue the outcome, with its
-        own timing report, for the CLI to show after the user's next entry."""
-        with timing.turn(f"index: {fact.text}", kind="background index") as t:
-            try:
-                message = f'Indexed "{fact.text}": {self._wait_for_index(job_id)}'
-                failed = False
-            except Exception as e:
-                message = f'Indexing FAILED for "{fact.text}": {e}'
-                failed = True
-        self.notices.put(Notice(message, failed, t))
+        return job_id
 
     def _wait_for_index(self, job_id: str) -> str:
         with span("captain.wait_for_index") as s:

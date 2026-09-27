@@ -1,9 +1,10 @@
 from ..config import Settings
 from .base import Fact, Hit, MemoryStore, Notice
 from .captain import CaptainStore
+from .cloudflare import CloudflareStore
 from .local import LocalStore
 
-__all__ = ["Fact", "Hit", "MemoryStore", "Notice", "CaptainStore", "LocalStore", "build_stores"]
+__all__ = ["Fact", "Hit", "MemoryStore", "Notice", "CaptainStore", "CloudflareStore", "LocalStore", "build_stores"]
 
 
 def build_stores(
@@ -22,8 +23,23 @@ def build_stores(
             settings.captain_api_key,
             settings.captain_collection,
             settings.captain_org_id,
-            settings.captain_index_timeout,
+            settings.index_timeout,
             background,
         )
         return store, log
-    raise RuntimeError(f"Unknown PKM_STORE {settings.store!r}; use 'captain' or 'local'.")
+    if settings.store == "cloudflare":
+        if not (settings.cloudflare_account_id and settings.cloudflare_api_token):
+            raise RuntimeError(
+                "CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN must be set (or set PKM_STORE=local)."
+            )
+        store = CloudflareStore(
+            settings.cloudflare_account_id,
+            settings.cloudflare_api_token,
+            settings.cloudflare_index,
+            settings.index_timeout,
+            background,
+        )
+        return store, log
+    raise RuntimeError(
+        f"Unknown PKM_STORE {settings.store!r}; use 'cloudflare', 'captain' or 'local'."
+    )

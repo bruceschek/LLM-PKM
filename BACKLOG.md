@@ -2,21 +2,29 @@
 
 ## Next
 
-0. **Experiment: terminal chat with Captain for retrieval** (see `CLAUDE.md`)
+0. **Experiment: terminal chat with Cloudflare for retrieval** (see `CLAUDE.md`)
    - [x] Built it and tested it with the local store.
-   - [ ] Add `CAPTAIN_API_KEY` to `.env` and test with Captain: how long
-     indexing takes, whether meaning-based search finds "married to" → wife,
-     and credit cost per fact.
-   - [ ] Decide whether Captain stays in the running as the long-term store.
-   - [x] Timing per step (`uv run pkm-timings`). Found that Captain takes
-     10 to 15 s to index each fact.
+   - [x] Tried Captain: meaning-based search, but 10 to 15 s to index each
+     fact. Set aside 2026-09-23 (code kept, `PKM_STORE=captain`).
+   - [x] Timing per step (`uv run pkm-timings`).
    - [x] Saves finish in the background in the CLI, so "got it" comes back
-     without waiting for Captain.
-   - [ ] **Risk, parked:** a question asked in the ~15 s while a fact is
-     still indexing won't find it. Possible fix: have `recall` also search
-     the local fact log for facts whose indexing hasn't finished.
+     without waiting for the store.
+   - [x] Wrote the Cloudflare store (Workers AI embeddings + Vectorize),
+     tested against a fake API only.
+   - [x] Created the Cloudflare account and token; tested the store for
+     real (2026-09-25). Saves about 1 s, searches 0.2 s, "married to" finds
+     "wife". But a new fact takes 15 to 70 s to become searchable.
+   - [ ] Run the full chat with Cloudflare once the Anthropic API limit is
+     sorted.
+   - [ ] **Risk, parked (bigger with Vectorize):** a question asked within
+     about a minute of saving a fact may not find it. Possible fix: have
+     `recall` also search the local fact log for facts saved in the last
+     few minutes.
    - [ ] Speed idea: when a message only saves facts, reply "Got it."
      directly instead of making a second Claude call to write it.
+   - [ ] Vector search always returns its closest matches, even when none
+     is relevant. Watch whether Claude answers from weak matches; if so,
+     drop hits below a score threshold.
 
 1. **Read and understand Karpathy's LLM Wiki gist** (Bruce)
    https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
@@ -47,7 +55,9 @@
    2. Create a GitHub OAuth App in GitHub settings, with its callback set
       to `https://<your-worker>.workers.dev/callback`.
    3. Store the secrets with `wrangler secret put`: `GITHUB_CLIENT_ID`,
-      `GITHUB_CLIENT_SECRET`, `COOKIE_ENCRYPTION_KEY`, and `CAPTAIN_API_KEY`.
+      `GITHUB_CLIENT_SECRET`, and `COOKIE_ENCRYPTION_KEY`. Bind the
+      existing `llm-pkm` Vectorize index and Workers AI directly instead of
+      calling them over REST.
    4. Add the allowlist, following the example pattern already in the
       template. Reject any login whose GitHub username isn't on the list.
       Usernames: TBD (the two developers).

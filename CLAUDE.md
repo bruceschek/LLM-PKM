@@ -10,12 +10,13 @@ https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 Early design, plus an experimental terminal prototype (below). See
 `BACKLOG.md` for what's next.
 
-## Prototype: terminal chat with Captain for retrieval
+## Prototype: terminal chat with Cloudflare for retrieval
 
 ```
-cp .env.example .env    # add ANTHROPIC_API_KEY and CAPTAIN_API_KEY
-uv run llm-pkm          # PKM_STORE=local runs offline, no Captain needed
+cp .env.example .env    # add ANTHROPIC_API_KEY and the Cloudflare account ID + token
+uv run llm-pkm          # PKM_STORE=local runs offline, no Cloudflare needed
 uv run pytest
+uv run llm-pkm --timing # also print how long each step took
 uv run pkm-timings      # median/max time per step, from data/timings.jsonl
 ```
 
@@ -27,32 +28,47 @@ Layout (`src/llm_pkm/`):
   loop. Claude decides whether a message is a fact or a question. The same
   two tools are meant to become MCP tools for the Claude app later.
 - `stores/`: the `MemoryStore` interface (`add`, `search`), with
-  `CaptainStore` and `LocalStore` implementations. Swapping Captain for an
-  AWS vector store means writing one new file here.
+  `CloudflareStore` (the default), `CaptainStore` (set aside) and
+  `LocalStore` implementations. Adding another backend means one new file
+  here. `stores/background.py` is the shared base for stores that take a
+  while to make a new fact searchable; in the CLI the wait runs on a worker
+  thread (see below).
+- `stores/cloudflare.py`: Workers AI (`@cf/baai/bge-base-en-v1.5`, 768
+  numbers per text, `cls` pooling) turns facts and questions into
+  embeddings; a Vectorize index (`llm-pkm`, cosine, created on first run)
+  stores and searches them. All over Cloudflare's REST API, so no Worker is
+  needed yet.
 - `stores/local.py` also serves as the raw fact log (`data/facts.jsonl`,
   git-ignored). Every fact is written there whichever store is active, so
-  the data never lives only inside Captain.
+  the data never lives in only one service.
 - `config.py`: all settings from env vars (see `.env.example`).
 - `timing.py`: per-step timings. Code wraps a step in `span("name")`; the
-  CLI prints each message's breakdown (`PKM_TIMING=0` hides it) and every
-  message is logged to `data/timings.jsonl`.
+  CLI prints each message's breakdown with `--timing`, and every message is
+  logged to `data/timings.jsonl` either way.
 - `cli.py`: the terminal loop. `lambda_handler.py`: an untested sketch of the
   Lambda entry point (the client passes the history in each request).
 
 Things we learned:
 
-- **Captain** (docs.captain.dev) returns matching chunks, not answers, so
-  Claude does the answering. Indexing runs in the background (you get a job
-  ID back). In the CLI, `CaptainStore` waits for the job on a worker thread,
-  so the bot says "got it" right away; how the save ended, with its timing,
-  is printed after the user's next entry. Elsewhere (the Lambda sketch),
-  `add` waits for the job before returning. Each fact is indexed as its own tiny text document, an
-  unusual fit for a service built to index files. Captain is a candidate for
-  the long-term store; not decided.
+- **Stores make new facts searchable asynchronously** (Captain: a job;
+  Vectorize: a batch job after the write). In the CLI the wait runs on a
+  worker thread, so the bot says "got it" right away; how the save ended,
+  with its timing, is printed after the user's next entry. Elsewhere (the
+  Lambda sketch), `add` waits before returning.
+- **Captain** (docs.captain.dev), set aside 2026-09-23 in favor of
+  Cloudflare. It returns matching chunks, not answers, so Claude does the
+  answering. Each fact is indexed as its own tiny text document, an unusual
+  fit for a service built to index files.
 - **Captain indexing is slow for our use** (measured 2026-09-23): 9 to 14 s
   of Captain-side processing per one-sentence fact, no queue time. Its text
   pipeline writes a summary and tags for each section before embedding, and
   the docs offer no faster mode. Search is fast (about 0.5 s).
+- **Cloudflare, measured 2026-09-25:** saving a fact (embed + write) takes
+  about 1 s and a search about 0.2 s. But a new fact takes 15 to 70 s to
+  become searchable, and searches can still miss it briefly after Vectorize
+  reports it processed. Meaning-based search works: "who is the user
+  married to?" matched "The user's wife's name is Hemmie." at 0.79,
+  against 0.48 for the next fact.
 - **Model:** `claude-opus-5` at effort `low` by default (`PKM_MODEL`,
   `PKM_EFFORT`), with server-side refusal fallback enabled.
 - **Search wording:** the local store's keyword search misses synonyms
