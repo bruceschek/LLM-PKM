@@ -1,3 +1,7 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
 # LLM PKM
 
 A personal knowledge store you feed by voice or text through the Claude app
@@ -16,9 +20,17 @@ Early design, plus an experimental terminal prototype (below). See
 cp .env.example .env    # add ANTHROPIC_API_KEY and the Cloudflare account ID + token
 uv run llm-pkm          # PKM_STORE=local runs offline, no Cloudflare needed
 uv run pytest
+uv run pytest tests/test_wiki.py::test_raw_and_log   # one test (no linter is configured)
 uv run llm-pkm --timing # also print how long each step took
+uv run pkm-ingest       # ingest files dropped into data/wiki/raw/ (--dry-run to just list them)
 uv run pkm-timings      # median/max time per step, from data/timings.jsonl
 ```
+
+Request flow: `cli.py` -> `Assistant.handle_message` (`core.py`) -> `run_turn`
+(`llm.py`), which loops Claude <-> tools. The tool executor is a closure in
+`handle_message`: `remember` writes the raw log, the retrieval store and (if
+enabled) a `raw/` wiki file; `recall` searches the store; `wiki_*` tools hit
+`wiki.py`. Tool schemas live in `llm.py`, their behavior in `core.py`.
 
 Layout (`src/llm_pkm/`):
 
@@ -47,7 +59,11 @@ Layout (`src/llm_pkm/`):
   file in `raw/`. The live vault is `data/wiki/` (git-ignored: real personal
   data; `PKM_WIKI_DIR=off` disables it). `wiki-example/` is the tracked
   template with invented sample data, and `SCHEMA.md` there is the rules
-  Claude is given. **Never commit anything from the live vault.**
+  Claude is given. `ingest.py` (`pkm-ingest`) handles files you drop into
+  `raw/` by hand: each new .md/.txt file (tracked in the vault's hidden
+  `.ingested.json`; chat captures are pre-marked) gets its own Claude
+  conversation that writes wiki pages and calls `remember` per fact.
+  **Never commit anything from the live vault.**
 - `config.py`: all settings from env vars (see `.env.example`).
 - `timing.py`: per-step timings. Code wraps a step in `span("name")`; the
   CLI prints each message's breakdown with `--timing`, and every message is

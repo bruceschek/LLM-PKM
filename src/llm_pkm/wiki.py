@@ -8,12 +8,15 @@ Claude gets three tools (read, write, log). They are confined to the vault:
 raw sources are written only by `save_raw`, and `write` only touches
 `index.md` and pages under `wiki/`."""
 
+import json
 import re
 import shutil
 from datetime import datetime
 from pathlib import Path
 
 EXAMPLE_DIR = Path(__file__).resolve().parents[2] / "wiki-example"
+RAW_SUFFIXES = {".md", ".txt"}  # what `pkm-ingest` picks up from raw/
+MANIFEST = ".ingested.json"  # hidden, so Obsidian ignores it
 SEED_FILES = ("SCHEMA.md", "lint-checklist.md")  # copied from the example
 
 
@@ -89,4 +92,28 @@ class Wiki:
             f"---\ncaptured: {now.isoformat(timespec='seconds')}\n---\n"
             f"Raw source. Do not edit.\n\n{text}\n"
         )
+        self.mark_ingested(f"raw/{name}.md")  # the chat ingests these itself
         return f"raw/{name}"
+
+    def _manifest(self) -> dict[str, str]:
+        path = self.root / MANIFEST
+        return json.loads(path.read_text()) if path.exists() else {}
+
+    def mark_ingested(self, rel: str, now: datetime | None = None) -> None:
+        manifest = self._manifest()
+        manifest[rel] = (now or datetime.now()).isoformat(timespec="seconds")
+        (self.root / MANIFEST).write_text(json.dumps(manifest, indent=1) + "\n")
+
+    def pending_raw(self) -> list[str]:
+        """Vault-relative paths of files in raw/ (dropped in by hand) that
+        haven't been ingested yet, oldest name first."""
+        done = self._manifest()
+        found = (
+            p.relative_to(self.root).as_posix()
+            for p in (self.root / "raw").rglob("*")
+            if p.is_file() and p.suffix in RAW_SUFFIXES and not p.name.startswith(".")
+        )
+        return sorted(rel for rel in found if rel not in done)
+
+    def read_raw(self, rel: str) -> str:
+        return (self.root / rel).read_text()

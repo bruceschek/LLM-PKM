@@ -40,6 +40,10 @@
    - [ ] Try it: capture a few facts, open `data/wiki/` in Obsidian, check the
      pages. Watch the latency (each save now costs extra Claude calls) and
      whether `recall` or the wiki answers questions better.
+   - [x] `uv run pkm-ingest`: ingests files dropped into `raw/` (wiki pages
+     plus `remember` per fact), 2026-09-30. Tested with a fake model only.
+   - [ ] Ingest: `--watch` mode; PDFs/web clips; chunking long sources into
+     the vector store.
    - [ ] Add a `lint` command that runs the checklist.
 
 ## Up next

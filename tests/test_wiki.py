@@ -44,3 +44,20 @@ def test_raw_and_log(tmp_path):
     assert "## [2026-09-30] ingest | Dana" in (tmp_path / "log.md").read_text()
     with pytest.raises(ValueError):
         wiki.log("bogus", "x", "y")
+
+
+def test_pending_raw_skips_ingested_hidden_and_other_types(tmp_path):
+    wiki = Wiki(tmp_path)
+    (tmp_path / "raw" / "b.md").write_text("b")
+    (tmp_path / "raw" / "a.txt").write_text("a")
+    (tmp_path / "raw" / "pic.png").write_bytes(b"x")
+    (tmp_path / "raw" / ".hidden.md").write_text("h")
+    assert wiki.pending_raw() == ["raw/a.txt", "raw/b.md"]
+    wiki.mark_ingested("raw/a.txt")
+    assert wiki.pending_raw() == ["raw/b.md"]
+
+
+def test_chat_captures_are_not_pending(tmp_path):
+    wiki = Wiki(tmp_path)
+    wiki.save_raw("hello there")
+    assert wiki.pending_raw() == []
