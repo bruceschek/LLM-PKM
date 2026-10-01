@@ -18,6 +18,11 @@ def main() -> None:
     parser.add_argument(
         "--timing", action="store_true", help="print how long each step took after every reply"
     )
+    parser.add_argument(
+        "--notices",
+        action="store_true",
+        help="show how each background save and wiki update ended (failures always show)",
+    )
     args = parser.parse_args()
 
     load_dotenv()
@@ -27,19 +32,19 @@ def main() -> None:
     history: list[dict] = []
     print(f"LLM PKM ({assistant.settings.store} store, {assistant.settings.model}). Ctrl-D to quit.")
     try:
-        chat(assistant, history, args.timing)
+        chat(assistant, history, args)
     finally:
-        finish(assistant, args.timing)
+        finish(assistant, args)
 
 
-def chat(assistant, history: list[dict], timing: bool) -> None:
+def chat(assistant, history: list[dict], args) -> None:
     while True:
         try:
             text = input("\nyou> ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             return
-        show_notices(assistant, timing)
+        show_notices(assistant, args)
         if not text:
             continue
         if text.lower() in {"quit", "exit"}:
@@ -53,22 +58,30 @@ def chat(assistant, history: list[dict], timing: bool) -> None:
             reply = f"[network error: {e}]"
             history.clear()
         print(f"pkm> {reply}")
-        if timing and assistant.last_turn:
+        if args.timing and assistant.last_turn:
             print(assistant.last_turn.report())
 
 
-def finish(assistant, timing: bool) -> None:
+def finish(assistant, args) -> None:
     """Don't quit mid-save: background saves and wiki updates run on daemon
     threads, and a half-done wiki update would leave pages inconsistent."""
     if assistant.pending_notices() <= 0:
         return
-    print("Finishing background saves...")
+    if args.notices:
+        print("Finishing background saves...")
     for notice in assistant.wait_for_saves(assistant.settings.index_timeout + 60):
-        print(f"[background] {notice.message}")
+        print_notice(notice, args)
 
 
-def show_notices(assistant, timing: bool) -> None:
+def show_notices(assistant, args) -> None:
     for notice in assistant.take_notices():
-        print(f"[background] {notice.message}")
-        if timing:
-            print(notice.turn.report())
+        print_notice(notice, args)
+
+
+def print_notice(notice, args) -> None:
+    """Quiet unless --notices; a failure always shows."""
+    if not (args.notices or notice.failed):
+        return
+    print(f"[background] {notice.message}")
+    if args.timing:
+        print(notice.turn.report())

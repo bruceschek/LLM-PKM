@@ -22,6 +22,7 @@ uv run llm-pkm          # PKM_STORE=local runs offline, no Cloudflare needed
 uv run pytest
 uv run pytest tests/test_wiki.py::test_raw_and_log   # one test (no linter is configured)
 uv run llm-pkm --timing # also print how long each step took
+uv run llm-pkm --notices # also show how background saves and wiki updates ended (failures always show)
 uv run pkm-ingest       # ingest files dropped into data/wiki/raw/ (--dry-run to just list them)
 uv run pkm-timings      # median/max time per step, from data/timings.jsonl
 ```
