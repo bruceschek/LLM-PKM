@@ -19,6 +19,7 @@ class Settings:
     cloudflare_api_token: str | None
     cloudflare_index: str
     index_timeout: float  # longest wait for a new fact to become searchable
+    wiki_dir: Path | None  # the Obsidian vault Claude maintains; None turns the wiki off
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -34,4 +35,14 @@ class Settings:
             cloudflare_api_token=os.environ.get("CLOUDFLARE_API_TOKEN"),
             cloudflare_index=os.environ.get("CLOUDFLARE_VECTORIZE_INDEX", "llm-pkm"),
             index_timeout=float(os.environ.get("PKM_INDEX_TIMEOUT", "90")),
+            wiki_dir=_wiki_dir(),
         )
+
+
+def _wiki_dir() -> Path | None:
+    """PKM_WIKI_DIR sets the vault; "off" disables the wiki layer. The default
+    is under the (git-ignored) data dir because it holds real personal data."""
+    value = os.environ.get("PKM_WIKI_DIR")
+    if value and value.lower() == "off":
+        return None
+    return Path(value) if value else Path(os.environ.get("PKM_DATA_DIR", "data")) / "wiki"

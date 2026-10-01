@@ -63,6 +63,61 @@ TOOLS = [
     },
 ]
 
+WIKI_SYSTEM = """
+
+You also maintain a markdown wiki (an Obsidian vault) of what the user tells \
+you, following the rules below. `remember` returns the raw source's path; after \
+saving facts, do the ingest steps: use `wiki_read` on `index.md` and any pages \
+the facts touch, then `wiki_write` the new or updated pages and the updated \
+index, citing the raw source, then `wiki_log`. Keep this quick: a short \
+fact touches one to three pages. For questions, `recall` finds facts; use \
+`wiki_read` when the wiki's pages would give a fuller answer. Never put \
+anything but facts the user told you in the wiki.
+
+Wiki rules (SCHEMA.md):
+
+"""
+
+WIKI_TOOLS = [
+    {
+        "name": "wiki_read",
+        "description": "Read a wiki file by vault-relative path, e.g. index.md or wiki/people/Dana.md. Use wiki_read with path 'LIST' to list all files.",
+        "strict": True,
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "wiki_write",
+        "description": "Create or fully replace index.md or a page under wiki/. Raw sources and the log can't be written this way.",
+        "strict": True,
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+            "required": ["path", "content"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "wiki_log",
+        "description": "Append an entry to log.md.",
+        "strict": True,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["ingest", "query", "lint", "schema"]},
+                "title": {"type": "string"},
+                "body": {"type": "string"},
+            },
+            "required": ["kind", "title", "body"],
+            "additionalProperties": False,
+        },
+    },
+]
+
 ToolExecutor = Callable[[str, dict], str]
 
 
@@ -71,6 +126,8 @@ def run_turn(
     settings: Settings,
     messages: list[dict],
     execute: ToolExecutor,
+    system: str = SYSTEM,
+    tools: list[dict] = TOOLS,
 ) -> str:
     """Run Claude until it stops calling tools. Appends every assistant and
     tool-result message to `messages` (as plain dicts, so the history can be
@@ -80,8 +137,8 @@ def run_turn(
             response = client.beta.messages.create(
                 model=settings.model,
                 max_tokens=16000,
-                system=SYSTEM,
-                tools=TOOLS,
+                system=system,
+                tools=tools,
                 messages=messages,
                 output_config={"effort": settings.effort},
                 # If Claude declines on safety grounds, retry on Anthropic's

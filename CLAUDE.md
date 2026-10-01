@@ -41,6 +41,13 @@ Layout (`src/llm_pkm/`):
 - `stores/local.py` also serves as the raw fact log (`data/facts.jsonl`,
   git-ignored). Every fact is written there whichever store is active, so
   the data never lives in only one service.
+- `wiki.py`: the wiki layer (Karpathy's pattern): a folder of markdown files,
+  an Obsidian vault, that Claude maintains through `wiki_read`, `wiki_write`
+  and `wiki_log` tools. `remember` also saves each message as an immutable
+  file in `raw/`. The live vault is `data/wiki/` (git-ignored: real personal
+  data; `PKM_WIKI_DIR=off` disables it). `wiki-example/` is the tracked
+  template with invented sample data, and `SCHEMA.md` there is the rules
+  Claude is given. **Never commit anything from the live vault.**
 - `config.py`: all settings from env vars (see `.env.example`).
 - `timing.py`: per-step timings. Code wraps a step in `span("name")`; the
   CLI prints each message's breakdown with `--timing`, and every message is

@@ -35,6 +35,13 @@
    - Form a view on the open question in `CLAUDE.md`: vector search, compiled
      wiki, or a hybrid.
 
+   - [x] Starter wiki vault in `wiki-example/` and wiki tools wired into the
+     chat (2026-09-30). Untested with the real model.
+   - [ ] Try it: capture a few facts, open `data/wiki/` in Obsidian, check the
+     pages. Watch the latency (each save now costs extra Claude calls) and
+     whether `recall` or the wiki answers questions better.
+   - [ ] Add a `lint` command that runs the checklist.
+
 ## Up next
 
 2. Research how the Claude iOS and macOS apps can call an external tool
