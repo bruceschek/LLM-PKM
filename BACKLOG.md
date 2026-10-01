@@ -20,8 +20,10 @@
      about a minute of saving a fact may not find it. Possible fix: have
      `recall` also search the local fact log for facts saved in the last
      few minutes.
-   - [ ] Speed idea: when a message only saves facts, reply "Got it."
-     directly instead of making a second Claude call to write it.
+   - [x] Speed (2026-10-01): skip the second Claude call when a message only
+     saves facts; Cloudflare write on the background thread; Haiku for chat.
+     Tested with fakes only. [ ] Re-measure with `uv run pkm-timings` and
+     check Haiku's fact/question judgment.
    - [ ] Vector search always returns its closest matches, even when none
      is relevant. Watch whether Claude answers from weak matches; if so,
      drop hits below a score threshold.

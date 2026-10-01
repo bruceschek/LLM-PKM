@@ -9,7 +9,8 @@ from pathlib import Path
 @dataclass(frozen=True)
 class Settings:
     store: str  # "cloudflare", "captain" or "local"
-    model: str
+    model: str  # chat turns: fast, since the user waits for these
+    wiki_model: str  # wiki updates and file ingest: run in the background, so quality over speed
     effort: str
     data_dir: Path
     captain_api_key: str | None
@@ -25,7 +26,8 @@ class Settings:
     def from_env(cls) -> "Settings":
         return cls(
             store=os.environ.get("PKM_STORE", "cloudflare"),
-            model=os.environ.get("PKM_MODEL", "claude-opus-5"),
+            model=os.environ.get("PKM_MODEL", "claude-haiku-4-5-20251001"),
+            wiki_model=os.environ.get("PKM_WIKI_MODEL", "claude-opus-5"),
             effort=os.environ.get("PKM_EFFORT", "low"),
             data_dir=Path(os.environ.get("PKM_DATA_DIR", "data")),
             captain_api_key=os.environ.get("CAPTAIN_API_KEY"),

@@ -38,9 +38,17 @@ TOOLS = [
                 "fact": {
                     "type": "string",
                     "description": "A single self-contained statement about the user.",
-                }
+                },
+                "also_asks": {
+                    "type": "boolean",
+                    "description": (
+                        "True if the user's message also asks a question or makes a "
+                        "request that you must still answer after saving. False if "
+                        "it only states facts."
+                    ),
+                },
             },
-            "required": ["fact"],
+            "required": ["fact", "also_asks"],
             "additionalProperties": False,
         },
     },
@@ -144,6 +152,24 @@ WIKI_TOOLS = [
 
 ToolExecutor = Callable[[str, dict], str]
 
+# When every tool call in a round is a `remember` of a message that only
+# states facts, the reply is always this: skip the second Claude call.
+SAVED_REPLY = "Got it."
+
+
+def _model_options(model: str, effort: str) -> dict:
+    """Effort and the refusal fallback are only sent to the larger models;
+    Haiku isn't known to accept them."""
+    if "haiku" in model:
+        return {}
+    return {
+        "output_config": {"effort": effort},
+        # If Claude declines on safety grounds, retry on Anthropic's
+        # recommended fallback model instead of returning a refusal.
+        "betas": ["server-side-fallback-2026-07-01"],
+        "fallbacks": "default",
+    }
+
 
 def run_turn(
     client: anthropic.Anthropic,
@@ -152,6 +178,7 @@ def run_turn(
     execute: ToolExecutor,
     system: str = SYSTEM,
     tools: list[dict] = TOOLS,
+    model: str | None = None,
 ) -> str:
     """Run Claude until it stops calling tools. Appends every assistant and
     tool-result message to `messages` (as plain dicts, so the history can be
@@ -159,16 +186,12 @@ def run_turn(
     while True:
         with span("claude") as s:
             response = client.beta.messages.create(
-                model=settings.model,
+                model=model or settings.model,
                 max_tokens=16000,
                 system=system,
                 tools=tools,
                 messages=messages,
-                output_config={"effort": settings.effort},
-                # If Claude declines on safety grounds, retry on Anthropic's
-                # recommended fallback model instead of returning a refusal.
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
+                **_model_options(model or settings.model, settings.effort),
             )
             s.info.update(
                 stop=response.stop_reason,
@@ -202,3 +225,8 @@ def run_turn(
                     }
                 )
         messages.append({"role": "user", "content": results})
+        if all(
+            u.name == "remember" and not u.input.get("also_asks", True) for u in tool_uses
+        ) and not any(r.get("is_error") for r in results):
+            messages.append({"role": "assistant", "content": [{"type": "text", "text": SAVED_REPLY}]})
+            return SAVED_REPLY

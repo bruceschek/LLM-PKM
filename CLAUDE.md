@@ -104,8 +104,17 @@ Things we learned:
   reports it processed. Meaning-based search works: "who is the user
   married to?" matched "The user's wife's name is Hemmie." at 0.79,
   against 0.48 for the next fact.
-- **Model:** `claude-opus-5` at effort `low` by default (`PKM_MODEL`,
-  `PKM_EFFORT`), with server-side refusal fallback enabled.
+- **Model:** chat turns use `claude-haiku-4-5-20251001` (`PKM_MODEL`; the
+  user waits for these); wiki updates and file ingest use `claude-opus-5`
+  (`PKM_WIKI_MODEL`; background, so quality over speed). Effort `low`
+  (`PKM_EFFORT`) and the server-side refusal fallback are sent only to
+  non-Haiku models. Haiku was chosen for speed and is untested for quality:
+  if it misjudges fact vs. question, set `PKM_MODEL=claude-opus-5`.
+- **Reply speed (measured 2026-10-01):** a capture took 4 to 8 s, nearly all
+  in two sequential Claude calls plus the Cloudflare write. Fixes: when a
+  message only states facts (`remember`'s `also_asks` is false) `run_turn`
+  replies "Got it." itself, skipping the second call; the embed and upsert
+  now run on the background thread too; Haiku for chat.
 - **Search wording:** the local store's keyword search misses synonyms
   ("married to" vs "wife"). The prompt tells Claude to retry `recall` with
   other wording, which fixed it in testing.

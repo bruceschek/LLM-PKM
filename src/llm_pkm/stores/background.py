@@ -23,6 +23,7 @@ class IndexingStore:
     def __init__(self, background: bool = False):
         self.background = background
         self.notices: queue.Queue[Notice] = queue.Queue()
+        self._submit_lock = threading.Lock()  # keeps writes in the order they were saved
 
     def _submit(self, fact: Fact) -> Any:
         """Hand the fact to the service. Returns a handle for _wait_for_index."""
@@ -34,17 +35,20 @@ class IndexingStore:
         raise NotImplementedError
 
     def add(self, fact: Fact) -> str:
-        handle = self._submit(fact)
         if not self.background:
-            return self._wait_for_index(handle)
-        threading.Thread(target=self._wait_in_background, args=(handle, fact), daemon=True).start()
-        return f"Saved; {self.name} is indexing it in the background."
+            return self._wait_for_index(self._submit(fact))
+        # Even the hand-off (embedding + write) runs on the worker thread, so
+        # the reply doesn't wait for it. The local fact log already has it.
+        threading.Thread(target=self._submit_and_wait, args=(fact,), daemon=True).start()
+        return f"Saved; {self.name} is storing and indexing it in the background."
 
-    def _wait_in_background(self, handle: Any, fact: Fact) -> None:
+    def _submit_and_wait(self, fact: Fact) -> None:
         """Queue the outcome, with its own timing report, for the CLI to show
         after the user's next entry."""
         with timing.turn(f"index: {fact.text}", kind="background index") as t:
             try:
+                with self._submit_lock:
+                    handle = self._submit(fact)
                 message = f'Indexed "{fact.text}": {self._wait_for_index(handle)}'
                 failed = False
             except Exception as e:

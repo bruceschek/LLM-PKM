@@ -20,7 +20,7 @@ def assistant(tmp_path):
 def test_ingest_remembers_facts_without_new_raw_file(assistant, monkeypatch):
     (assistant.wiki.root / "raw" / "article.md").write_text("Theo is Dana's son.")
 
-    def fake_run_turn(client, settings, messages, execute, system, tools):
+    def fake_run_turn(client, settings, messages, execute, system, tools, model=None):
         assert "raw/article.md" in messages[0]["content"]
         assert "Theo is Dana's son." in messages[0]["content"]
         assert "Raw source saved as raw/article." in execute("remember", {"fact": "Theo is Dana's son."})
@@ -56,7 +56,7 @@ def test_chat_reply_does_not_wait_for_wiki_update(assistant, monkeypatch):
     gate = threading.Event()
     calls = []
 
-    def fake_run_turn(client, settings, messages, execute, system, tools):
+    def fake_run_turn(client, settings, messages, execute, system, tools, model=None):
         calls.append([t["name"] for t in tools])
         if len(calls) == 1:  # the chat turn: only wiki_read among wiki tools
             execute("remember", {"fact": "The user's dog is Rex."})

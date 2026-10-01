@@ -151,6 +151,7 @@ class Assistant:
             label=f"ingest {rel}",
             system=SYSTEM + WIKI_SYSTEM + self.wiki.schema(),
             tools=TOOLS + WIKI_TOOLS,
+            model=self.settings.wiki_model,
         )
         self.wiki.mark_ingested(rel)
         return reply
@@ -165,6 +166,7 @@ class Assistant:
         label: str,
         system: str,
         tools: list[dict],
+        model: str | None = None,
     ) -> str:
         """Run one user turn. `remember` appends each fact to `saved`, and
         saves `text` as a raw wiki source (appending its path to `raw`) unless
@@ -191,7 +193,7 @@ class Assistant:
 
         try:
             with timing.turn(label) as t:
-                return run_turn(self.client, self.settings, history, execute, system, tools)
+                return run_turn(self.client, self.settings, history, execute, system, tools, model)
         finally:  # after the `with`, so the turn's total time is filled in
             self.last_turn = t
             timing.append_log(self._timings_path, t)
@@ -249,6 +251,7 @@ class Assistant:
                     lambda name, args: self._wiki_tool(name, args),
                     MAINTAIN_SYSTEM + self.wiki.schema(),
                     WIKI_TOOLS,
+                    self.settings.wiki_model,
                 )
                 message, failed = f"Wiki updated: {reply}", False
             except Exception as e:

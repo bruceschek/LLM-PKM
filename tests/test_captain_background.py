@@ -53,8 +53,8 @@ def test_add_returns_before_indexing_and_reports_later(monkeypatch):
     notice = wait_for_notice(store)
     assert not notice.failed
     assert "The test widget is blue." in notice.message
-    [wait] = notice.turn.spans
-    assert wait.name == "captain.wait_for_index"
+    [wait] = [sp for sp in notice.turn.spans if sp.name == "captain.wait_for_index"]
+    assert any(sp.name == "captain.submit" for sp in notice.turn.spans)  # hand-off ran in the thread too
     assert wait.info["captain_processing_s"] == 12.0
     assert notice.turn.kind == "background index"
 
