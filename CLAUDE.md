@@ -28,9 +28,20 @@ uv run pkm-timings      # median/max time per step, from data/timings.jsonl
 
 Request flow: `cli.py` -> `Assistant.handle_message` (`core.py`) -> `run_turn`
 (`llm.py`), which loops Claude <-> tools. The tool executor is a closure in
-`handle_message`: `remember` writes the raw log, the retrieval store and (if
-enabled) a `raw/` wiki file; `recall` searches the store; `wiki_*` tools hit
-`wiki.py`. Tool schemas live in `llm.py`, their behavior in `core.py`.
+`_converse`: `remember` writes the raw log, the retrieval store and (if the
+wiki is on) a `raw/` file; `recall` searches the store *plus* facts from the
+local log saved in the last 10 minutes (the store lags 15 to 70 s); chat has
+only read access to the wiki (`wiki_read`). Tool schemas and prompts live in
+`llm.py`, their behavior in `core.py`.
+
+Replies don't wait for slow work. The full session history goes to Claude on
+every call, so it knows what the user just said even if nothing is indexed.
+Store indexing runs on a thread per fact (`stores/background.py`); wiki
+updates are queued as a `WikiJob` and run, one at a time in order, by a
+worker thread in a separate Claude conversation that has the write tools
+(`MAINTAIN_SYSTEM`). Both report back as `Notice`s, shown after the user's
+next entry, and the CLI waits for them on exit. `Assistant(background=False)`
+(tests, Lambda) runs the wiki job inline instead.
 
 Layout (`src/llm_pkm/`):
 

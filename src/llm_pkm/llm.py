@@ -18,7 +18,9 @@ on its own months from now (e.g. "my wife's name is Hemmie" becomes "The \
 user's wife's name is Hemmie."). Then reply with a very short acknowledgement \
 such as "Got it."
 - When the user asks a question, call `recall` first, then answer briefly \
-using only what it returns, speaking to the user directly ("Her name is \
+using what it returns plus anything the user said earlier in this \
+conversation (a fact they just told you may not be searchable yet; `recall` \
+also lists recently saved facts), speaking to the user directly ("Her name is \
 Hemmie."). If nothing relevant comes back, try `recall` again with other \
 wording (synonyms, related terms: "married to" -> "wife", "husband", \
 "spouse"). If that still finds nothing, say you don't have that yet.
@@ -63,6 +65,29 @@ TOOLS = [
     },
 ]
 
+# Interactive chat: the wiki is read-only. Maintenance happens afterwards on a
+# background thread (MAINTAIN_SYSTEM), so the reply isn't held up by it.
+WIKI_QUERY_SYSTEM = """
+
+The user's facts are also kept as a markdown wiki. When its pages would give \
+a fuller answer than `recall`, use `wiki_read` (`index.md` lists the pages; \
+path 'LIST' lists every file). You can't change the wiki; that happens \
+separately."""
+
+MAINTAIN_SYSTEM = """You maintain a markdown wiki (an Obsidian vault) of what the \
+user tells their personal memory, following the rules below. You'll be given \
+facts that were just saved and the raw source they came from. Do the ingest \
+steps: `wiki_read` `index.md` and any pages the facts touch, then `wiki_write` \
+the new or updated pages and the updated index, citing the raw source, then \
+`wiki_log`. Keep it quick: a short fact touches one to three pages. Don't \
+call `remember` (the facts are already saved). Put nothing in the wiki but \
+what the facts say. Reply with one short line saying what you did.
+
+Wiki rules (SCHEMA.md):
+
+"""
+
+# pkm-ingest: one conversation does both the facts and the wiki pages.
 WIKI_SYSTEM = """
 
 You also maintain a markdown wiki (an Obsidian vault) of what the user tells \
@@ -70,9 +95,8 @@ you, following the rules below. `remember` returns the raw source's path; after 
 saving facts, do the ingest steps: use `wiki_read` on `index.md` and any pages \
 the facts touch, then `wiki_write` the new or updated pages and the updated \
 index, citing the raw source, then `wiki_log`. Keep this quick: a short \
-fact touches one to three pages. For questions, `recall` finds facts; use \
-`wiki_read` when the wiki's pages would give a fuller answer. Never put \
-anything but facts the user told you in the wiki.
+fact touches one to three pages. Put nothing in the wiki but what the user \
+told you.
 
 Wiki rules (SCHEMA.md):
 

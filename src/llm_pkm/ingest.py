@@ -40,8 +40,8 @@ def main() -> None:
         except (anthropic.APIError, httpx.HTTPError, OSError, UnicodeDecodeError) as e:
             failed += 1
             print(f"  FAILED, will retry next run: {e}")
-    if assistant.facts_saved:
-        print(f"\nWaiting for {assistant.facts_saved} fact(s) to become searchable...")
+    if assistant.pending_notices() > 0:
+        print(f"\nWaiting for {assistant.pending_notices()} background save(s) to become searchable...")
         for notice in assistant.wait_for_saves(assistant.settings.index_timeout + 10):
             print(f"  {notice.message}")
     if failed:
