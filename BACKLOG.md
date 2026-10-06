@@ -14,8 +14,7 @@
    - [x] Created the Cloudflare account and token; tested the store for
      real (2026-09-25). Saves about 1 s, searches 0.2 s, "married to" finds
      "wife". But a new fact takes 15 to 70 s to become searchable.
-   - [ ] Run the full chat with Cloudflare once the Anthropic API limit is
-     sorted.
+   - [ ] Run the full chat with Cloudflare.
    - [ ] **Risk, parked (bigger with Vectorize):** a question asked within
      about a minute of saving a fact may not find it. Possible fix: have
      `recall` also search the local fact log for facts saved in the last
