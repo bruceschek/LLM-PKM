@@ -8,7 +8,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class Settings:
-    store: str  # "cloudflare", "captain" or "local"
+    store: str  # "wiki" (no fact store: the wiki is the memory), "cloudflare", "captain" or "local"
     model: str  # chat turns: fast, since the user waits for these
     wiki_model: str  # wiki updates and file ingest: run in the background, so quality over speed
     effort: str
@@ -21,11 +21,13 @@ class Settings:
     cloudflare_index: str
     index_timeout: float  # longest wait for a new fact to become searchable
     wiki_dir: Path | None  # the Obsidian vault Claude maintains; None turns the wiki off
+    owner: str | None  # the one person this memory belongs to; if unset, the name saved in the vault
+    country: str  # whose public holidays Claude is told about (ISO code), or "off"
 
     @classmethod
     def from_env(cls) -> "Settings":
         return cls(
-            store=os.environ.get("PKM_STORE", "cloudflare"),
+            store=os.environ.get("PKM_STORE", "wiki"),
             model=os.environ.get("PKM_MODEL", "claude-haiku-4-5-20251001"),
             wiki_model=os.environ.get("PKM_WIKI_MODEL", "claude-opus-5"),
             effort=os.environ.get("PKM_EFFORT", "low"),
@@ -38,6 +40,8 @@ class Settings:
             cloudflare_index=os.environ.get("CLOUDFLARE_VECTORIZE_INDEX", "llm-pkm"),
             index_timeout=float(os.environ.get("PKM_INDEX_TIMEOUT", "90")),
             wiki_dir=_wiki_dir(),
+            owner=os.environ.get("PKM_OWNER") or None,
+            country=os.environ.get("PKM_COUNTRY", "US"),
         )
 
 

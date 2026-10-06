@@ -14,26 +14,59 @@ https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 Early design, plus an experimental terminal prototype (below). See
 `BACKLOG.md` for what's next.
 
-## Prototype: terminal chat with Cloudflare for retrieval
+## Direction: wiki-first (decided 2026-10-06)
+
+Vector embeddings are **on hold**. The focus is Karpathy's pattern alone: raw
+sources, a wiki Claude maintains, a schema, and the ingest / query / lint
+operations. The wiki is the memory, there is no fact store, and the vault is
+meant to be read in Obsidian.
+
+- `PKM_STORE=wiki` is the default and means "no retrieval store".
+- The vector code is kept and still runs with `PKM_STORE=cloudflare`,
+  `captain` or `local`: `stores/`, `recall`, `facts.jsonl`, and the prompts
+  marked "on hold" in `llm.py`. Don't extend it; don't delete it yet.
+- The git tag `vector-prototype` is the last commit before this change.
+- Why: the gist's point is that knowledge is compiled once and kept current
+  rather than re-derived from chunks per question, and we want to find out
+  how far that goes on its own for short personal facts before adding
+  search back (the gist suggests search only once the index stops being
+  enough).
+- First real run, 2026-10-06, on a throwaway vault: a capture replied in
+  about 3 s, a question answered from the wiki in about 5 s (one page read),
+  and a background wiki update took 13 to 23 s. Pages came out with valid
+  frontmatter. Not yet tried on the live vault or with many pages.
+- The Anthropic key is exported in `~/.zshrc`, and the `claude` alias there
+  strips it, so shells started by Claude Code don't have it.
+
+## Prototype: terminal chat over the wiki
 
 ```
-cp .env.example .env    # add ANTHROPIC_API_KEY and the Cloudflare account ID + token
-uv run llm-pkm          # PKM_STORE=local runs offline, no Cloudflare needed
+cp .env.example .env    # add ANTHROPIC_API_KEY
+uv run llm-pkm          # chat; the vault is data/wiki/ (open that folder in Obsidian)
 uv run pytest
 uv run pytest tests/test_wiki.py::test_raw_and_log   # one test (no linter is configured)
 uv run llm-pkm --timing # also print how long each step took
-uv run llm-pkm --notices # also show how background saves and wiki updates ended (failures always show)
+uv run llm-pkm --notices # also show how background wiki updates ended (failures always show)
 uv run pkm-ingest       # ingest files dropped into data/wiki/raw/ (--dry-run to just list them)
+uv run pkm-lint         # health-check the wiki against its lint-checklist.md
 uv run pkm-timings      # median/max time per step, from data/timings.jsonl
 ```
 
-Request flow: `cli.py` -> `Assistant.handle_message` (`core.py`) -> `run_turn`
-(`llm.py`), which loops Claude <-> tools. The tool executor is a closure in
-`_converse`: `remember` writes the raw log, the retrieval store and (if the
-wiki is on) a `raw/` file; `recall` searches the store *plus* facts from the
-local log saved in the last 10 minutes (the store lags 15 to 70 s); chat has
-only read access to the wiki (`wiki_read`). Tool schemas and prompts live in
-`llm.py`, their behavior in `core.py`.
+Request flow (wiki-first): `cli.py` -> `Assistant.handle_message` (`core.py`)
+-> `run_turn` (`llm.py`), which loops Claude <-> tools. Chat gets two tools:
+`remember` (saves the message as a `raw/` file and collects the facts) and
+`wiki_read`. The current `index.md` is put in the system prompt on every
+turn, with a list of captures the wiki hasn't absorbed yet, so a question
+costs one round of page reads and then the answer. After the reply, the
+facts are queued as a `WikiJob`; a maintenance conversation (`_maintain` /
+`_run_wiki_job`, `MAINTAIN_SYSTEM`, the write tools) folds them into pages.
+A raw file counts as pending until that succeeds, so a failed update is
+retried by `pkm-ingest`. Tool schemas and prompts live in `llm.py`, their
+behavior in `core.py`.
+
+With a fact store (on hold), `remember` also writes the raw log and the
+store, and `recall` searches the store plus facts saved in the last 10
+minutes.
 
 Replies don't wait for slow work. The full session history goes to Claude on
 every call, so it knows what the user just said even if nothing is indexed.
@@ -67,15 +100,34 @@ Layout (`src/llm_pkm/`):
   the data never lives in only one service.
 - `wiki.py`: the wiki layer (Karpathy's pattern): a folder of markdown files,
   an Obsidian vault, that Claude maintains through `wiki_read`, `wiki_write`
-  and `wiki_log` tools. `remember` also saves each message as an immutable
-  file in `raw/`. The live vault is `data/wiki/` (git-ignored: real personal
-  data; `PKM_WIKI_DIR=off` disables it). `wiki-example/` is the tracked
-  template with invented sample data, and `SCHEMA.md` there is the rules
-  Claude is given. `ingest.py` (`pkm-ingest`) handles files you drop into
-  `raw/` by hand: each new .md/.txt file (tracked in the vault's hidden
-  `.ingested.json`; chat captures are pre-marked) gets its own Claude
-  conversation that writes wiki pages and calls `remember` per fact.
+  and `wiki_log` tools. `wiki_read` takes a path or a page title, resolved
+  like an Obsidian link. `remember` saves each message as an immutable file
+  in `raw/`. The live vault is `data/wiki/` (git-ignored: real personal
+  data). `wiki-example/` is the tracked template with invented sample data.
+  A new vault is seeded from it with `SCHEMA.md` (the rules Claude is
+  given), `lint-checklist.md` and two `.obsidian/` settings files; an
+  existing vault keeps its own copies, so a change to the template's
+  `SCHEMA.md` has to be copied into the live vault by hand. `ingest.py`
+  (`pkm-ingest`) handles raw files not yet in the wiki: each pending
+  .md/.txt file (the vault's hidden `.ingested.json` lists the done ones)
+  gets its own maintenance conversation. `lint.py` (`pkm-lint`) runs the
+  lint operation.
   **Never commit anything from the live vault.**
+- **Obsidian:** page frontmatter must be valid YAML for the Properties
+  panel: `sources` is a list of quoted links (`- "[[raw/...]]"`); a bare
+  `[[link]]` there is read as a nested list. Page titles are filenames and
+  must be unique. The seeded `graph.json` colors raw sources, people,
+  places and topics differently.
+- `ambient.py`: everyday context that isn't in the wiki (so far the
+  owner's name, the date and time, and the public holidays of `PKM_COUNTRY`, default US, from the
+  `holidays` package). Each provider is a function returning one line;
+  `everyday_context()` adds them to the system prompt of chat and of wiki
+  maintenance, so they cost no tool call. Slow or rarely needed ones should
+  become tools instead. The memory has a single owner: their name comes
+  from `PKM_OWNER` or the vault's hidden `.owner` file, and if neither is
+  set the chat asks for it at startup and saves it there (`pkm-ingest` and
+  `pkm-lint` don't ask). The chat prompt also tells Claude to turn "next
+  Tuesday" into the actual date when saving a fact.
 - `config.py`: all settings from env vars (see `.env.example`).
 - `timing.py`: per-step timings. Code wraps a step in `span("name")`; the
   CLI prints each message's breakdown with `--timing`, and every message is
@@ -83,7 +135,7 @@ Layout (`src/llm_pkm/`):
 - `cli.py`: the terminal loop. `lambda_handler.py`: an untested sketch of the
   Lambda entry point (the client passes the history in each request).
 
-Things we learned:
+Things we learned (most of these are about the on-hold vector path):
 
 - **Stores make new facts searchable asynchronously** (Captain: a job;
   Vectorize: a batch job after the write). In the CLI the wait runs on a

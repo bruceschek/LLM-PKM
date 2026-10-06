@@ -1,6 +1,10 @@
-"""Claude and its two tools. Claude decides whether each message is a fact to
-remember or a question to answer; the same two tools can later be exposed as
-an MCP server for the Claude app."""
+"""Claude, its prompts and its tools. Claude decides whether each message is a
+fact to remember or a question to answer.
+
+Wiki-first (PKM_STORE=wiki, the default): chat gets `remember` and `wiki_read`
+(WIKI_CHAT_*), and a separate maintenance conversation gets the wiki write
+tools (MAINTAIN_SYSTEM). The older vector-search path (SYSTEM, `recall`,
+WIKI_QUERY_SYSTEM, WIKI_SYSTEM) is on hold but still works."""
 
 from collections.abc import Callable
 
@@ -79,8 +83,33 @@ TOOLS = [
     },
 ]
 
-# Interactive chat: the wiki is read-only. Maintenance happens afterwards on a
-# background thread (MAINTAIN_SYSTEM), so the reply isn't held up by it.
+# Wiki-first chat. core.py appends the current index.md (and any captures not
+# yet folded in) to this on every turn, which saves the round trip of reading
+# the index before each answer.
+WIKI_CHAT_SYSTEM = """You are the user's personal memory. What they tell you is \
+kept as a markdown wiki (an Obsidian vault) that they also browse themselves.
+
+- When the user states a fact, call `remember` once per distinct fact. Rewrite \
+each fact as a self-contained statement about "the user" that will make sense \
+on its own months from now (e.g. "my wife's name is Hemmie" becomes "The \
+user's wife's name is Hemmie."), and turn relative times into actual dates \
+("tomorrow" becomes the date). Then reply with a very short acknowledgement \
+such as "Got it." The wiki pages are updated from these shortly afterwards, \
+separately; you can't write pages yourself.
+- When the user asks a question about themselves or anything they might have \
+told you, answer from the wiki. Its index is below: pick every page that \
+could hold the answer and `wiki_read` them (several in one go) before \
+answering. For broad questions ("what do you know about me?") read many \
+pages. Never say you don't know without having read the pages that could \
+say. Also use anything said earlier in this conversation, and `wiki_read` any \
+relevant capture listed below as not yet in the wiki. Answer briefly, \
+speaking to the user directly ("Her name is Hemmie."), then name the pages \
+the answer came from as links, e.g. "(from [[Dana]])". If nothing has it, say \
+you don't have that yet.
+- If newer and older facts disagree, trust the newer one and mention the change.
+- For anything else (greetings, chit-chat), just reply briefly without tools."""
+
+# On hold (vector-search chat): the wiki is a read-only extra beside `recall`.
 WIKI_QUERY_SYSTEM = """
 
 The user's facts are also kept as a markdown wiki. When its pages would give \
@@ -88,20 +117,24 @@ a fuller answer than `recall`, use `wiki_read` (`index.md` lists the pages; \
 path 'LIST' lists every file). You can't change the wiki; that happens \
 separately."""
 
+# The maintenance conversation: every change to the wiki goes through this
+# (a chat capture, a file from pkm-ingest, a lint pass), away from the chat.
 MAINTAIN_SYSTEM = """You maintain a markdown wiki (an Obsidian vault) of what the \
-user tells their personal memory, following the rules below. You'll be given \
-facts that were just saved and the raw source they came from. Do the ingest \
-steps: `wiki_read` `index.md` and any pages the facts touch, then `wiki_write` \
-the new or updated pages and the updated index, citing the raw source, then \
-`wiki_log`. Keep it quick: a short fact touches one to three pages. Don't \
-call `remember` (the facts are already saved). Put nothing in the wiki but \
-what the facts say. Reply with one short line saying what you did.
+user tells their personal memory, following the rules below. Each request is \
+one operation: ingest a raw source, or lint.
+
+To ingest: `wiki_read` `index.md` and any pages the source touches, then \
+`wiki_write` the new or updated pages and the updated index, citing the raw \
+source, then `wiki_log`. Keep it quick: a short fact touches one to three \
+pages. Put nothing in the wiki but what the source says. Reply with one short \
+line saying what you did.
 
 Wiki rules (SCHEMA.md):
 
 """
 
-# pkm-ingest: one conversation does both the facts and the wiki pages.
+# On hold (pkm-ingest with a fact store): one conversation does both the
+# facts and the wiki pages.
 WIKI_SYSTEM = """
 
 You also maintain a markdown wiki (an Obsidian vault) of what the user tells \
@@ -119,7 +152,7 @@ Wiki rules (SCHEMA.md):
 WIKI_TOOLS = [
     {
         "name": "wiki_read",
-        "description": "Read a wiki file by vault-relative path, e.g. index.md or wiki/people/Dana.md. Use wiki_read with path 'LIST' to list all files.",
+        "description": "Read a wiki page by its title, as in an Obsidian link (Dana), or any vault file by its path (index.md, wiki/people/Dana.md, raw/2026-09-30-first-captures.md). Use wiki_read with path 'LIST' to list all files.",
         "strict": True,
         "input_schema": {
             "type": "object",
@@ -155,6 +188,8 @@ WIKI_TOOLS = [
         },
     },
 ]
+
+WIKI_CHAT_TOOLS = [TOOLS[0], WIKI_TOOLS[0]]  # remember, wiki_read
 
 ToolExecutor = Callable[[str, dict], str]
 

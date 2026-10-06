@@ -1,7 +1,8 @@
 ---
 type: place
 updated: 2026-09-30
-sources: [[raw/2026-09-30-first-captures]]
+sources:
+  - "[[raw/2026-09-30-first-captures]]"
 ---
 Restaurant where the pho was good.
 

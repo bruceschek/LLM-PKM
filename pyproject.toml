@@ -8,6 +8,7 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "anthropic>=1.8.0",
+    "holidays>=0.106",
     "httpx>=0.28.1",
     "python-dotenv>=1.2.3",
 ]
@@ -16,6 +17,7 @@ dependencies = [
 llm-pkm = "llm_pkm:main"
 pkm-timings = "llm_pkm.timing:main"
 pkm-ingest = "llm_pkm.ingest:main"
+pkm-lint = "llm_pkm.lint:main"
 
 [build-system]
 requires = ["uv_build>=0.11.4,<0.12.0"]

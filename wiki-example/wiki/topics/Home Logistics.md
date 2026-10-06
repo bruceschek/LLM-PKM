@@ -1,7 +1,8 @@
 ---
 type: topic
 updated: 2026-09-30
-sources: [[raw/2026-09-30-first-captures]]
+sources:
+  - "[[raw/2026-09-30-first-captures]]"
 ---
 Household facts: codes, where things are kept.
 

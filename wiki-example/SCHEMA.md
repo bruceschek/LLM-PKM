@@ -13,20 +13,26 @@ https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
 2. **The wiki** (`wiki/`). Pages the LLM writes and maintains. The LLM owns
    this layer; the human reads it.
    - `wiki/people/`, `wiki/places/`, `wiki/topics/`: one page per entity or
-     topic. Filenames are the page title, so `[[Dana]]` just works.
+     topic. Filenames are the page title, so `[[Dana]]` just works. Titles
+     must be unique across the whole vault, and can't contain `/ \ : # ^ [ ] |`.
 3. **The schema** (this file).
 
 Two special files at the vault root: [[index]] (catalog) and [[log]] (history).
 
 ## Page format
 
-Every wiki page starts with frontmatter, then a one-line summary, then details:
+The human reads this wiki in Obsidian, so pages must be valid there. Every
+wiki page starts with frontmatter (Obsidian shows it as Properties), then a
+one-line summary, then details:
 
 ```markdown
 ---
-type: person | place | topic
+type: person
+aliases:
+  - Dana Reyes
 updated: 2026-09-30
-sources: [[raw/2026-09-30-first-captures]]
+sources:
+  - "[[raw/2026-09-30-first-captures]]"
 ---
 One-sentence summary.
 
@@ -39,6 +45,11 @@ One-sentence summary.
 
 Rules:
 
+- `type` is `person`, `place` or `topic`. `aliases` (optional) lists other
+  names the page goes by, so links and search find it. `sources` is a list
+  with one quoted link per line, exactly as above: an unquoted `[[link]]` is
+  not valid in frontmatter.
+- No `# Title` heading at the top: Obsidian shows the filename as the title.
 - Link generously with `[[wikilinks]]`; every page should link to at least
   one other page and be linked from [[index]].
 - Every fact cites a raw source. If the source is unclear, say so.
@@ -62,7 +73,8 @@ Rules:
 1. Read [[index]] to find the relevant pages, then read those.
 2. Answer, citing the pages (and through them, the raw sources).
 3. If the answer took real synthesis, file it back as a new page or a
-   section, so the work isn't lost in chat. Log it.
+   section, so the work isn't lost in chat. Log it. (Not automatic yet: the
+   chat can read the wiki but not write it.)
 
 ### Lint (periodic health check)
 

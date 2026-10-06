@@ -11,6 +11,7 @@ def test_new_vault_has_rules_index_and_log(tmp_path):
     for name in ("index.md", "log.md", "lint-checklist.md"):
         assert (tmp_path / "vault" / name).exists()
     assert (tmp_path / "vault" / "raw").is_dir()
+    assert (tmp_path / "vault" / ".obsidian" / "graph.json").exists()
 
 
 def test_write_and_read_pages(tmp_path):
@@ -19,6 +20,14 @@ def test_write_and_read_pages(tmp_path):
     assert wiki.read("wiki/people/Dana.md") == "# Dana\n"
     assert "wiki/people/Dana.md" in wiki.list_pages()
     assert wiki.read("wiki/nope.md").startswith("No such page")
+
+
+@pytest.mark.parametrize("name", ["Dana", "[[Dana]]", "[[Dana|her]]", "Dana#Facts", "Dana.md"])
+def test_read_by_title_like_an_obsidian_link(tmp_path, name):
+    wiki = Wiki(tmp_path)
+    wiki.write("wiki/people/Dana.md", "A friend.")
+    assert wiki.read(name) == "A friend.\n"
+    assert wiki.read("Nobody").startswith("No such page")
 
 
 @pytest.mark.parametrize(
@@ -57,7 +66,9 @@ def test_pending_raw_skips_ingested_hidden_and_other_types(tmp_path):
     assert wiki.pending_raw() == ["raw/b.md"]
 
 
-def test_chat_captures_are_not_pending(tmp_path):
+def test_chat_capture_is_pending_until_marked(tmp_path):
     wiki = Wiki(tmp_path)
-    wiki.save_raw("hello there")
+    path = wiki.save_raw("hello there")
+    assert wiki.pending_raw() == [f"{path}.md"]
+    wiki.mark_ingested(f"{path}.md")
     assert wiki.pending_raw() == []

@@ -2,7 +2,36 @@
 
 ## Next
 
-0. **Experiment: terminal chat with Cloudflare for retrieval** (see `CLAUDE.md`)
+**Direction changed 2026-10-06: wiki-first, vector search on hold** (see
+`CLAUDE.md`; tag `vector-prototype` is the state before).
+
+W. **Wiki-first prototype** (Karpathy's LLM Wiki pattern, no fact store)
+   - [x] Step 1 (2026-10-06): `PKM_STORE=wiki` is the default. Chat has
+     `remember` and `wiki_read`; the index is in its prompt; answers name
+     the pages they came from.
+   - [x] Step 2 (2026-10-06): one maintenance conversation for every wiki
+     change. A capture stays pending until its update succeeds; `pkm-ingest`
+     retries failures. `uv run pkm-lint` added.
+   - [x] Step 3 (2026-10-06): Obsidian fit. Valid frontmatter properties,
+     aliases, graph colors, `wiki_read` by page title, vault path shown at
+     startup.
+   - [x] First real run on a throwaway vault (2026-10-06): captures,
+     background updates and answers from pages all worked.
+   - [ ] Try it on the live vault: capture, ask, open `data/wiki/` in
+     Obsidian, run `pkm-lint`. Check Haiku still picks the right pages
+     once the index is long.
+   - [ ] File useful answers back into the wiki (the gist's query step 3).
+     Chat can't write pages; give it a tool that queues a maintenance job.
+   - [ ] Lint from inside the chat ("lint the wiki"), and a code-side check
+     for broken links and orphans so Claude doesn't have to find them by
+     reading every page.
+   - [ ] Superseded facts: check the maintenance conversation marks the old
+     fact as the schema says.
+   - [ ] Ingest: `--watch` mode; PDFs and web clips; long sources.
+   - [ ] When the index outgrows the prompt: split it by category, or add
+     search over the pages (the point at which vectors might come back).
+
+0. **ON HOLD: terminal chat with Cloudflare for retrieval** (see `CLAUDE.md`)
    - [x] Built it and tested it with the local store.
    - [x] Tried Captain: meaning-based search, but 10 to 15 s to index each
      fact. Set aside 2026-09-23 (code kept, `PKM_STORE=captain`).
@@ -15,10 +44,8 @@
      real (2026-09-25). Saves about 1 s, searches 0.2 s, "married to" finds
      "wife". But a new fact takes 15 to 70 s to become searchable.
    - [ ] Run the full chat with Cloudflare.
-   - [ ] **Risk, parked (bigger with Vectorize):** a question asked within
-     about a minute of saving a fact may not find it. Possible fix: have
-     `recall` also search the local fact log for facts saved in the last
-     few minutes.
+   - [x] A question asked within about a minute of saving a fact could
+     miss it: `recall` now also lists facts saved in the last 10 minutes.
    - [x] Speed (2026-10-01): skip the second Claude call when a message only
      saves facts; Cloudflare write on the background thread; Haiku for chat.
      Tested with fakes only. [ ] Re-measure with `uv run pkm-timings` and
@@ -43,9 +70,7 @@
      whether `recall` or the wiki answers questions better.
    - [x] `uv run pkm-ingest`: ingests files dropped into `raw/` (wiki pages
      plus `remember` per fact), 2026-09-30. Tested with a fake model only.
-   - [ ] Ingest: `--watch` mode; PDFs/web clips; chunking long sources into
-     the vector store.
-   - [ ] Add a `lint` command that runs the checklist.
+   - (Ingest and lint follow-ups moved to item W.)
 
 ## Up next
 

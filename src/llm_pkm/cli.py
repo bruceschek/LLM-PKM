@@ -1,9 +1,9 @@
 """Terminal chat loop: type a fact or a question, get a reply. Ctrl-D or
 "quit" to exit. `--timing` prints how long each step took.
 
-Saves and wiki updates finish in the background, so "got it" comes back before the store has
-indexed the fact. How each save ended (and, with --timing, its timing) is
-shown right after the user's next entry; an empty entry just shows anything
+Wiki updates (and store saves) finish in the background, so "got it" comes
+back before the wiki has the fact. How each ended (and, with --timing, its
+timing) is shown right after the user's next entry; an empty entry just shows anything
 waiting. Timings are logged to data/timings.jsonl either way."""
 
 import argparse
@@ -28,13 +28,39 @@ def main() -> None:
     load_dotenv()
     from .core import Assistant  # after load_dotenv, so settings see .env
 
+    from . import ambient
+
     assistant = Assistant.from_env(background=True)
+    if not ambient.owner_name(assistant.settings) and not ask_owner(assistant.settings):
+        return
     history: list[dict] = []
-    print(f"LLM PKM ({assistant.settings.store} store, {assistant.settings.model}). Ctrl-D to quit.")
+    print(
+        f"LLM PKM for {ambient.owner_name(assistant.settings)} "
+        f"({assistant.settings.store} store, {assistant.settings.model}). Ctrl-D to quit."
+    )
+    if assistant.wiki:
+        print(f"Wiki: {assistant.wiki.root.resolve()} (in Obsidian: Open folder as vault)")
     try:
         chat(assistant, history, args)
     finally:
         finish(assistant, args)
+
+
+def ask_owner(settings) -> bool:
+    """This memory belongs to one person. Nobody has said who yet, so ask,
+    and save the answer in the vault. False if the user quit instead."""
+    from . import ambient
+
+    print("This memory belongs to one person, and I don't know who yet.")
+    name = ""
+    while not name:
+        try:
+            name = input("What is your name? ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return False
+    ambient.save_owner(settings, name)
+    return True
 
 
 def chat(assistant, history: list[dict], args) -> None:

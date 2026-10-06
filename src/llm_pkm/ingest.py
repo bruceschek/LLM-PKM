@@ -1,9 +1,11 @@
 """`uv run pkm-ingest`: fold files dropped into the vault's raw/ folder into
-the wiki and the fact store. Run it by hand after adding sources; files
-already ingested (tracked in the vault's .ingested.json) are skipped.
+the wiki. Run it by hand after adding sources; files already ingested
+(tracked in the vault's .ingested.json) are skipped. It also retries chat
+captures whose wiki update failed.
 
-Each file is a separate Claude conversation: Claude writes the wiki pages and
-calls `remember` for each fact it extracts, so `recall` finds them too."""
+Each file is a separate Claude conversation that writes the wiki pages. With
+a fact store (PKM_STORE other than wiki) Claude also calls `remember` for
+each fact it extracts, so `recall` finds them too."""
 
 import argparse
 

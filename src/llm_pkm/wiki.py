@@ -17,7 +17,12 @@ from pathlib import Path
 EXAMPLE_DIR = Path(__file__).resolve().parents[2] / "wiki-example"
 RAW_SUFFIXES = {".md", ".txt"}  # what `pkm-ingest` picks up from raw/
 MANIFEST = ".ingested.json"  # hidden, so Obsidian ignores it
-SEED_FILES = ("SCHEMA.md", "lint-checklist.md")  # copied from the example
+SEED_FILES = (  # copied from the example into a vault that lacks them
+    "SCHEMA.md",
+    "lint-checklist.md",
+    ".obsidian/core-plugins.json",
+    ".obsidian/graph.json",  # colors raw sources, people, places and topics apart
+)
 
 
 class Wiki:
@@ -31,6 +36,7 @@ class Wiki:
             (self.root / sub).mkdir(parents=True, exist_ok=True)
         for name in SEED_FILES:
             if not (self.root / name).exists() and (EXAMPLE_DIR / name).exists():
+                (self.root / name).parent.mkdir(exist_ok=True)
                 shutil.copy(EXAMPLE_DIR / name, self.root / name)
         if not (self.root / "index.md").exists():
             (self.root / "index.md").write_text(
@@ -59,9 +65,18 @@ class Wiki:
         return full
 
     def read(self, path: str) -> str:
-        full = self._resolve(path)
+        """Read a file by vault path, or a page by its title the way Obsidian
+        resolves a link: `Dana`, `[[Dana]]` and `wiki/people/Dana.md` all work."""
+        name = path.strip().removeprefix("[[").removesuffix("]]")
+        name = re.split(r"[|#]", name)[0].strip()  # drop a link's alias or heading
+        if not name.endswith(".md"):
+            name += ".md"
+        full = self._resolve(name)
         if not full.exists():
-            return f"No such page: {path}"
+            matches = sorted(self.root.rglob(Path(name).name)) if "/" not in name else []
+            if not matches:
+                return f"No such page: {path}"
+            full = matches[0]
         return full.read_text()
 
     def list_pages(self) -> str:
@@ -84,15 +99,14 @@ class Wiki:
 
     def save_raw(self, text: str, now: datetime | None = None) -> str:
         """Store one user message as an immutable raw source; return its
-        vault path (for citing)."""
+        vault path (for citing). It counts as pending until `mark_ingested`."""
         now = now or datetime.now()
         slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40] or "capture"
         name = f"{now:%Y-%m-%d-%H%M%S}-{slug}"
         (self.root / "raw" / f"{name}.md").write_text(
-            f"---\ncaptured: {now.isoformat(timespec='seconds')}\n---\n"
+            f"---\ncaptured: {now.isoformat(timespec='seconds')}\nvia: chat\n---\n"
             f"Raw source. Do not edit.\n\n{text}\n"
         )
-        self.mark_ingested(f"raw/{name}.md")  # the chat ingests these itself
         return f"raw/{name}"
 
     def _manifest(self) -> dict[str, str]:
@@ -105,8 +119,8 @@ class Wiki:
         (self.root / MANIFEST).write_text(json.dumps(manifest, indent=1) + "\n")
 
     def pending_raw(self) -> list[str]:
-        """Vault-relative paths of files in raw/ (dropped in by hand) that
-        haven't been ingested yet, oldest name first."""
+        """Vault-relative paths of files in raw/ (chat captures and files
+        dropped in by hand) not yet folded into the wiki, oldest name first."""
         done = self._manifest()
         found = (
             p.relative_to(self.root).as_posix()

@@ -9,11 +9,14 @@ __all__ = ["Fact", "Hit", "MemoryStore", "Notice", "CaptainStore", "CloudflareSt
 
 def build_stores(
     settings: Settings, background: bool = False
-) -> tuple[MemoryStore, LocalStore]:
-    """Return (retrieval store, raw fact log). With PKM_STORE=local they are
-    the same object. `background` lets a slow store finish saves on a worker
-    thread (see CaptainStore)."""
+) -> tuple[MemoryStore | None, LocalStore]:
+    """Return (retrieval store, raw fact log). With PKM_STORE=wiki there is no
+    retrieval store (the wiki is the memory, and the log goes unused); with
+    PKM_STORE=local they are the same object. `background` lets a slow store
+    finish saves on a worker thread (see CaptainStore)."""
     log = LocalStore(settings.data_dir / "facts.jsonl")
+    if settings.store == "wiki":
+        return None, log
     if settings.store == "local":
         return log, log
     if settings.store == "captain":
@@ -41,5 +44,5 @@ def build_stores(
         )
         return store, log
     raise RuntimeError(
-        f"Unknown PKM_STORE {settings.store!r}; use 'cloudflare', 'captain' or 'local'."
+        f"Unknown PKM_STORE {settings.store!r}; use 'wiki', 'cloudflare', 'captain' or 'local'."
     )

@@ -10,11 +10,14 @@ from datetime import UTC, datetime, timedelta
 import anthropic
 
 from . import timing
+from .ambient import everyday_context
 from .config import Settings
 from .llm import (
     MAINTAIN_SYSTEM,
     SYSTEM,
     TOOLS,
+    WIKI_CHAT_SYSTEM,
+    WIKI_CHAT_TOOLS,
     WIKI_QUERY_SYSTEM,
     WIKI_SYSTEM,
     WIKI_TOOLS,
@@ -27,6 +30,7 @@ from .wiki import Wiki
 
 MAX_INGEST_CHARS = 100_000  # longer sources are cut off
 RECENT_WINDOW = timedelta(minutes=10)  # `recall` also lists facts saved this recently
+MAX_PENDING_SHOWN = 20  # captures not yet in the wiki that chat is told about
 
 
 @dataclass
@@ -41,14 +45,19 @@ class Assistant:
     def __init__(
         self,
         settings: Settings,
-        store: MemoryStore,
+        store: MemoryStore | None,
         log: LocalStore,
         client: anthropic.Anthropic | None = None,
         background: bool = False,
     ):
         """`background`: finish slow work (wiki updates; the store's own
         saves, if built with background=True) on worker threads, so a reply
-        doesn't wait for it. Long-lived processes only."""
+        doesn't wait for it. Long-lived processes only.
+
+        `store=None` is wiki-first: no fact store or fact log, the wiki is
+        the memory, and chat answers by reading its pages."""
+        if store is None and not settings.wiki_dir:
+            raise RuntimeError("PKM_STORE=wiki needs the wiki, but PKM_WIKI_DIR is off.")
         self.settings = settings
         self.store = store
         self.log = log
@@ -107,13 +116,16 @@ class Assistant:
     def handle_message(self, text: str, history: list[dict]) -> str:
         """Answer one user message. `history` is this conversation's messages
         so far (updated in place), and goes to Claude with every call, so it
-        knows what the user just said even if the store hasn't indexed it.
+        knows what the user just said even if it isn't in the wiki or store yet.
 
-        Saving to the wiki is not part of the reply: it's queued as a job."""
+        Updating the wiki is not part of the reply: it's queued as a job."""
         saved: list[str] = []
         raw: list[str] = []
         system, tools = SYSTEM, TOOLS
-        if self.wiki:
+        if self.store is None:
+            system = WIKI_CHAT_SYSTEM + everyday_context(self.settings) + self._wiki_context()
+            tools = WIKI_CHAT_TOOLS
+        elif self.wiki:
             system += WIKI_QUERY_SYSTEM
             tools = TOOLS + WIKI_TOOLS[:1]  # wiki_read only
         reply = self._converse(text, history, text, raw, saved, label=text, system=system, tools=tools)
@@ -121,40 +133,88 @@ class Assistant:
             self._queue_wiki_job(WikiJob(raw[0], saved))
         return reply
 
+    def _wiki_context(self) -> str:
+        """What wiki-first chat is given on every turn: the index, and the
+        captures the wiki hasn't caught up with (an update still running, or
+        one that failed)."""
+        text = "\n\nindex.md right now:\n\n" + self.wiki.read("index.md")
+        pending = self.wiki.pending_raw()[-MAX_PENDING_SHOWN:]
+        if pending:
+            text += "\nCaptures not yet in the wiki:\n" + "\n".join(f"- {p}" for p in pending)
+        return text
+
     def ingest_file(self, rel: str) -> str:
-        """Fold one file that was dropped into the vault's raw/ folder into the
-        wiki and the fact store (the "ingest" operation in SCHEMA.md), in one
-        conversation. Returns Claude's short report. Marks the file ingested
-        only if it succeeds."""
+        """Fold one file from the vault's raw/ folder into the wiki (and the
+        fact store, if there is one): the "ingest" operation in SCHEMA.md, in
+        one conversation. Returns Claude's short report. Marks the file
+        ingested only if it succeeds."""
         if not self.wiki:
             raise RuntimeError("The wiki is off (PKM_WIKI_DIR=off); nothing to ingest into.")
         content = self.wiki.read_raw(rel)
         truncated = len(content) > MAX_INGEST_CHARS
+        remember = (
+            "Also call `remember` once for each distinct fact worth keeping, as a "
+            "self-contained statement. If the source isn't about the user, phrase the "
+            "fact about its subject (e.g. \"The Eiffel Tower is 330 m tall.\"), and say "
+            "where it came from. "
+        )
         prompt = (
             f"Ingest the new raw source `{rel}` (already saved; don't save it again). "
             "Follow the wiki's ingest steps: summarize the takeaways, create or update "
-            "the wiki pages it touches, update the index, and log it. Also call "
-            "`remember` once for each distinct fact worth keeping, as a self-contained "
-            "statement. If the source isn't about the user, phrase the fact about its "
-            "subject (e.g. \"The Eiffel Tower is 330 m tall.\"), and say where it came "
-            "from. Reply with one line saying what you did.\n\n"
+            "the wiki pages it touches, update the index, and log it. "
+            + (remember if self.store is not None else "")
+            + "Reply with one line saying what you did.\n\n"
             f"Contents of `{rel}`"
             + (f" (truncated to the first {MAX_INGEST_CHARS} characters)" if truncated else "")
             + f":\n\n{content[:MAX_INGEST_CHARS]}"
         )
-        reply = self._converse(
-            prompt,
-            [],
-            f"[{rel}] {content[:500]}",
-            [rel.removesuffix(".md")],
-            [],
-            label=f"ingest {rel}",
-            system=SYSTEM + WIKI_SYSTEM + self.wiki.schema(),
-            tools=TOOLS + WIKI_TOOLS,
-            model=self.settings.wiki_model,
-        )
+        if self.store is None:
+            reply = self._maintain(prompt, label=f"ingest {rel}")
+        else:
+            reply = self._converse(
+                prompt,
+                [],
+                f"[{rel}] {content[:500]}",
+                [rel.removesuffix(".md")],
+                [],
+                label=f"ingest {rel}",
+                system=SYSTEM + WIKI_SYSTEM + self.wiki.schema(),
+                tools=TOOLS + WIKI_TOOLS,
+                model=self.settings.wiki_model,
+            )
         self.wiki.mark_ingested(rel)
         return reply
+
+    def lint(self) -> str:
+        """Health-check the wiki (the "lint" operation in SCHEMA.md). Returns
+        Claude's report: what it fixed and what needs the user's decision."""
+        if not self.wiki:
+            raise RuntimeError("The wiki is off (PKM_WIKI_DIR=off); nothing to lint.")
+        prompt = (
+            "Lint the wiki. `wiki_read` `lint-checklist.md` and work through it: read "
+            "`index.md`, list every file (path 'LIST') and read the pages. Raw sources "
+            "listed below as not yet ingested are not your concern here. Fix what is "
+            "safe to fix, then `wiki_log` the pass. Reply with a short report: what you "
+            "fixed, then what needs the user's decision."
+        )
+        pending = self.wiki.pending_raw()
+        if pending:
+            prompt += "\n\nNot yet ingested:\n" + "\n".join(f"- {p}" for p in pending)
+        return self._maintain(prompt, label="lint")
+
+    def _maintain(self, prompt: str, label: str) -> str:
+        """One maintenance conversation: Claude with the wiki write tools."""
+        return self._converse(
+            prompt,
+            [],
+            "",
+            [label],  # `remember` isn't offered, so no raw source gets saved
+            [],
+            label=label,
+            system=MAINTAIN_SYSTEM + self.wiki.schema() + everyday_context(self.settings),
+            tools=WIKI_TOOLS,
+            model=self.settings.wiki_model,
+        )
 
     def _converse(
         self,
@@ -177,17 +237,19 @@ class Assistant:
             with span(name):
                 if name == "remember":
                     fact = Fact(text=args["fact"], source_text=source_text)
-                    if self.log is not self.store:
-                        self.log.add(fact)
-                    result = self.store.add(fact)
-                    self.facts_saved += 1
+                    result = "Saved."
+                    if self.store is not None:
+                        if self.log is not self.store:
+                            self.log.add(fact)
+                        result = self.store.add(fact)
+                        self.facts_saved += 1
                     saved.append(fact.text)
                     if self.wiki:
                         if not raw:
                             raw.append(self.wiki.save_raw(text))
                         result += f" Raw source saved as {raw[0]}."
                     return result
-                if name == "recall":
+                if name == "recall" and self.store is not None:
                     return self._recall(args["query"])
                 return self._wiki_tool(name, args)
 
@@ -238,10 +300,11 @@ class Assistant:
             self._run_wiki_job(self._wiki_queue.get())
 
     def _run_wiki_job(self, job: WikiJob) -> None:
-        """Update the wiki for facts just saved: a separate Claude conversation
-        with the wiki tools. Its outcome is reported as a notice."""
+        """Update the wiki for a chat capture: a separate Claude conversation
+        with the wiki tools. Its outcome is reported as a notice. If it fails,
+        the raw source stays pending and `pkm-ingest` will pick it up."""
         facts = "\n".join(f"- {f}" for f in job.facts)
-        prompt = f"Raw source: `{job.raw}`\n\nFacts just saved from it:\n{facts}"
+        prompt = f"Ingest the raw source `{job.raw}`. The facts it states:\n{facts}"
         with timing.turn(f"wiki: {job.facts[0]}", kind="background wiki") as t:
             try:
                 reply = run_turn(
@@ -249,11 +312,15 @@ class Assistant:
                     self.settings,
                     [{"role": "user", "content": prompt}],
                     lambda name, args: self._wiki_tool(name, args),
-                    MAINTAIN_SYSTEM + self.wiki.schema(),
+                    MAINTAIN_SYSTEM + self.wiki.schema() + everyday_context(self.settings),
                     WIKI_TOOLS,
                     self.settings.wiki_model,
                 )
+                self.wiki.mark_ingested(f"{job.raw}.md")
                 message, failed = f"Wiki updated: {reply}", False
             except Exception as e:
-                message, failed = f"Wiki update FAILED for {job.raw}: {e}", True
+                message, failed = (
+                    f"Wiki update FAILED for {job.raw} (`uv run pkm-ingest` retries it): {e}",
+                    True,
+                )
         self._wiki_notices.put(Notice(message, failed, t))

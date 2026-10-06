@@ -10,6 +10,7 @@ obvious; otherwise list it for the human.
 - [ ] **Uncited facts:** facts with no link to a raw source.
 - [ ] **Missing pages:** names or topics mentioned on several pages that have no page of their own.
 - [ ] **Gaps:** questions the wiki can't answer yet, worth asking the human about.
+- [ ] **Bad frontmatter:** pages whose properties don't follow [[SCHEMA]] (e.g. `sources` written as a bare `[[link]]` instead of a list of quoted links).
 - [ ] **Index drift:** one-line summaries in [[index]] that no longer match the page.
 
 Finish by appending a `lint` entry to [[log]].

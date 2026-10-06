@@ -6,7 +6,36 @@
   "hideUnresolved": false,
   "showOrphans": true,
   "collapse-color-groups": true,
-  "colorGroups": [],
+  "colorGroups": [
+    {
+      "query": "path:raw",
+      "color": {
+        "a": 1,
+        "rgb": 10395294
+      }
+    },
+    {
+      "query": "path:wiki/people",
+      "color": {
+        "a": 1,
+        "rgb": 5017078
+      }
+    },
+    {
+      "query": "path:wiki/places",
+      "color": {
+        "a": 1,
+        "rgb": 4171371
+      }
+    },
+    {
+      "query": "path:wiki/topics",
+      "color": {
+        "a": 1,
+        "rgb": 14717242
+      }
+    }
+  ],
   "collapse-display": true,
   "showArrow": false,
   "textFadeMultiplier": 0,
