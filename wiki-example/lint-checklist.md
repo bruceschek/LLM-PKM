@@ -8,6 +8,7 @@ obvious; otherwise list it for the human.
 - [ ] **Contradictions:** two pages (or two facts on one page) that disagree and aren't marked superseded.
 - [ ] **Stale claims:** facts that a newer raw source has overtaken.
 - [ ] **Uncited facts:** facts with no link to a raw source.
+- [ ] **Outside knowledge:** facts on a page that its cited raw source doesn't state. Remove them or list them; never fill a gap from general knowledge. (A date worked out from "last week" and the source's capture date is fine.)
 - [ ] **Missing pages:** names or topics mentioned on several pages that have no page of their own.
 - [ ] **Gaps:** questions the wiki can't answer yet, worth asking the human about.
 - [ ] **Bad frontmatter:** pages whose properties don't follow [[SCHEMA]] (e.g. `sources` written as a bare `[[link]]` instead of a list of quoted links).

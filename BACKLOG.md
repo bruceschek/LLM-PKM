@@ -25,13 +25,18 @@ W. **Wiki-first prototype** (Karpathy's LLM Wiki pattern, no fact store)
      (must type DELETE).
    - [ ] File useful answers back into the wiki (the gist's query step 3).
      Chat can't write pages; give it a tool that queues a maintenance job.
-   - [ ] Lint from inside the chat ("lint the wiki"), and a code-side check
-     for broken links and orphans so Claude doesn't have to find them by
-     reading every page.
+   - [x] 2026-10-08: lint from inside the chat (`/lint` or plain words).
+   - [ ] A code-side check for broken links and orphans, so Claude doesn't
+     have to find them by reading every page. Try lint on the live vault.
    - [ ] Superseded facts: check the maintenance conversation marks the old
      fact as the schema says.
    - [x] 2026-10-07: PDFs can be ingested; `/ingest` in the chat, with
      optional guidance on what to keep.
+   - [x] 2026-10-08: sources only. The wiki holds nothing from Claude's
+     general knowledge; chat may add it only after "Not from your wiki:".
+     It speaks up, in bright blue, when a statement contradicts general
+     knowledge. Prompt wording, tried twice for real. [ ] Try it on a long document
+     ingest, where adding background is most tempting.
    - [ ] Ingest: `--watch` mode; web clips; long sources (a text file is cut
      at 100,000 characters, a PDF at 20 MB); other formats (Word, images).
    - [ ] When the index outgrows the prompt: split it by category, or add
@@ -113,7 +118,24 @@ W. **Wiki-first prototype** (Karpathy's LLM Wiki pattern, no fact store)
    - Should the two developers share one memory store, or each have their
      own (e.g. a separate Captain collection per GitHub username)?
 
+7. **Local MCP server for Claude Desktop** (the likely next step; focus is
+   local for now, decided 2026-10-08). A small stdio server in this project
+   offering `wiki_read` and `remember` (maybe `lint`, `rewind`), added to
+   Claude Desktop's config. Desktop's Claude replaces our Haiku chat; wiki
+   updates still run on the API key. Our prompt rules become tool
+   descriptions, so "Not from your wiki" will hold less firmly.
+
 ## Later
+
+- **AWS sketch for the cloud version (parked 2026-10-08, not built or
+  priced).** API Gateway + a Python Lambda speaking MCP; the vault as
+  objects in an encrypted, versioned S3 bucket (`wiki.py` needs an S3
+  backend; versioning could replace `.undo/`); wiki updates through an SQS
+  FIFO queue to a worker Lambda calling Opus, one at a time; Cognito for
+  login; Secrets Manager for the key (or Claude via Bedrock); CDK or SAM.
+  Open: the OAuth flow the Claude apps expect (Cognito alone likely isn't
+  enough), syncing the vault back to the Mac for Obsidian, and reports
+  fetched by a tool since the app can't be sent notices.
 
 - Deploy to AWS (infra as code).
 - Connect the Claude app to it and test end to end from iPhone by voice.

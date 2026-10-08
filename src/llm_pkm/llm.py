@@ -13,6 +13,10 @@ import anthropic
 from .config import Settings
 from .timing import span
 
+# Starts every statement that comes from Claude's general knowledge rather
+# than the wiki. The CLI colors a line from this marker on.
+OUTSIDE = "Not from your wiki:"
+
 SYSTEM = """You are the user's personal memory. They tell you facts about their \
 life and later ask you about them.
 
@@ -57,8 +61,18 @@ TOOLS = [
                         "it only states facts."
                     ),
                 },
+                "doubt": {
+                    "type": "string",
+                    "description": (
+                        "Normally an empty string. Only if this fact plainly "
+                        "contradicts well-established general knowledge: one short "
+                        "sentence saying what you understand to be true instead. "
+                        "It is shown to the user, marked as not from their wiki; "
+                        "the fact is still saved as they said it."
+                    ),
+                },
             },
-            "required": ["fact", "also_asks"],
+            "required": ["fact", "also_asks", "doubt"],
             "additionalProperties": False,
         },
     },
@@ -94,8 +108,12 @@ each fact as a self-contained statement about "the user" that will make sense \
 on its own months from now (e.g. "my wife's name is Hemmie" becomes "The \
 user's wife's name is Hemmie."), and turn relative times into actual dates \
 ("tomorrow" becomes the date). Then reply with a very short acknowledgement \
-such as "Got it." The wiki pages are updated from these shortly afterwards, \
-separately; you can't write pages yourself.
+such as "Got it." Save only what the user said: add no detail, correction \
+or background of your own. If a fact plainly contradicts well-established \
+general knowledge (not merely surprising, and never a private matter you \
+couldn't know), still save it exactly as said and put what you understand \
+to be true in `doubt`; the user is shown it. The wiki pages are updated from these shortly \
+afterwards, separately; you can't write pages yourself.
 - When the user asks a question about themselves or anything they might have \
 told you, answer from the wiki. Its index is below: pick every page that \
 could hold the answer and `wiki_read` them (several in one go) before \
@@ -106,14 +124,31 @@ relevant capture listed below as not yet in the wiki. Answer briefly, \
 speaking to the user directly ("Her name is Hemmie."), then name the pages \
 the answer came from as links, e.g. "(from [[Dana]])". If nothing has it, say \
 you don't have that yet.
+- Facts come from three places only: the wiki, what the user said in this \
+conversation, and the everyday context at the end of this prompt. Your own \
+general knowledge is not the user's memory. Never use it to fill in, guess \
+or correct anything about the user, the people they know or their life, and \
+never blend it into an answer drawn from the wiki. You may add it in two \
+cases: where it would really help (the question is about the wider world, \
+or a page leaves out something commonly known), and, without being asked, \
+whenever what the wiki or the user says plainly contradicts \
+well-established general knowledge; speak up then, briefly. Either way it \
+goes after the wiki's part, on a line of its own that starts "Not from \
+your wiki:" and holds nothing else; give the wiki's version and yours \
+separately and don't decide between them. If the wiki has nothing on the \
+question, say that first.
 - If newer and older facts disagree, trust the newer one and mention the change.
 - If the user wants the last thing they told you taken back, however they \
 put it ("rewind", "undo that", "scratch that", "forget what I just said"), \
 call `rewind` and tell them what it removed. It only ever removes the most \
 recent stored change; call it again only if they ask again.
+- If the user asks to lint, check, tidy or health-check the wiki, however \
+they put it, call `lint` once and tell them it has started and that the \
+report will appear when it is done. Don't check the wiki yourself instead.
 - You can't erase the memory. If the user asks to delete everything, tell \
 them to type /delete-all, which asks them to confirm.
-- For anything else (greetings, chit-chat), just reply briefly without tools."""
+- For anything else (greetings, chit-chat), just reply briefly without \
+tools; the "Not from your wiki:" rule still applies to any fact you state."""
 
 # On hold (vector-search chat): the wiki is a read-only extra beside `recall`.
 WIKI_QUERY_SYSTEM = """
@@ -132,8 +167,18 @@ one operation: ingest a raw source, or lint.
 To ingest: `wiki_read` `index.md` and any pages the source touches, then \
 `wiki_write` the new or updated pages and the updated index, citing the raw \
 source, then `wiki_log`. Keep it quick: a short fact touches one to three \
-pages. Put nothing in the wiki but what the source says. Reply with one short \
-line saying what you did.
+pages. Reply with one short line saying what you did.
+
+Use no outside knowledge, in any operation. Everything you write in the \
+wiki must come from a raw source (or, for a chat capture, the facts listed \
+with it). Don't add background, dates, full names, spellings, explanations \
+or corrections that you know but the source doesn't state, however sure you \
+are, and don't guess at how people or things are related. If a source looks \
+wrong or incomplete, record what it says and note the doubt as a question \
+for the user; don't fix it. The everyday context below (today's date, the \
+owner's name) is only for working out dates and who "the user" is. An \
+actual date worked out from a relative one ("last week") and the day the \
+source was captured is not outside knowledge: keep it.
 
 Wiki rules (SCHEMA.md):
 
@@ -205,7 +250,20 @@ REWIND_TOOL = {
     "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
 }
 
-WIKI_CHAT_TOOLS = [TOOLS[0], WIKI_TOOLS[0], REWIND_TOOL]  # remember, wiki_read, rewind
+LINT_TOOL = {
+    "name": "lint",
+    "description": (
+        "Start a health check of the whole wiki (orphans, broken links, "
+        "contradictions, uncited facts and the rest of its lint checklist). It "
+        "runs in the background and takes a minute or more; the report is shown "
+        "to the user when it is done, not returned to you."
+    ),
+    "strict": True,
+    "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+}
+
+# remember, wiki_read, rewind, lint
+WIKI_CHAT_TOOLS = [TOOLS[0], WIKI_TOOLS[0], REWIND_TOOL, LINT_TOOL]
 
 ToolExecutor = Callable[[str, dict], str]
 
@@ -285,5 +343,9 @@ def run_turn(
         if all(
             u.name == "remember" and not u.input.get("also_asks", True) for u in tool_uses
         ) and not any(r.get("is_error") for r in results):
-            messages.append({"role": "assistant", "content": [{"type": "text", "text": SAVED_REPLY}]})
-            return SAVED_REPLY
+            doubts = [d for u in tool_uses if (d := (u.input.get("doubt") or "").strip())]
+            reply = "\n".join(
+                [SAVED_REPLY] + [f"{OUTSIDE} {d.removeprefix(OUTSIDE).strip()}" for d in doubts]
+            )
+            messages.append({"role": "assistant", "content": [{"type": "text", "text": reply}]})
+            return reply

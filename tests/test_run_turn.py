@@ -45,6 +45,19 @@ def test_only_facts_skips_the_second_claude_call():
     assert messages[-1] == {"role": "assistant", "content": [{"type": "text", "text": SAVED_REPLY}]}
 
 
+def test_a_doubted_fact_is_saved_and_the_doubt_shown_as_outside_knowledge():
+    client = FakeClient(
+        response(
+            tool_use("remember", fact="Paris is in Spain.", also_asks=False, doubt="Paris is in France.")
+        )
+    )
+    saved = []
+    reply = run_turn(client, SETTINGS, [{"role": "user", "content": "a"}], lambda n, a: saved.append(a) or "Saved.")
+    assert reply == f"{SAVED_REPLY}\nNot from your wiki: Paris is in France."
+    assert saved[0]["fact"] == "Paris is in Spain."
+    assert len(client.requests) == 1
+
+
 def test_fact_plus_question_still_gets_an_answer():
     client = FakeClient(
         response(tool_use("remember", fact="A.", also_asks=True)),

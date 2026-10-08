@@ -50,6 +50,11 @@ class IngestJob:
     guidance: str | None  # what the user said about it
 
 
+@dataclass
+class LintJob:
+    """A lint pass the user asked for (/lint, or in plain words, in the chat)."""
+
+
 class Assistant:
     def __init__(
         self,
@@ -306,6 +311,17 @@ class Assistant:
         Claude's report: what it fixed and what needs the user's decision."""
         if not self.wiki:
             raise RuntimeError("The wiki is off (PKM_WIKI_DIR=off); nothing to lint.")
+        with self.wiki.journal("lint", "lint pass"):
+            return self._maintain(self._lint_message(), label="lint")
+
+    def queue_lint(self) -> None:
+        """Lint on the worker, behind any wiki updates already waiting, so
+        the chat stays free. The report comes back as a notice."""
+        if not self.wiki or self.store is not None:
+            raise RuntimeError("Linting from the chat needs PKM_STORE=wiki; use `uv run pkm-lint`.")
+        self._queue_wiki_job(LintJob())
+
+    def _lint_message(self) -> str:
         prompt = (
             "Lint the wiki. `wiki_read` `lint-checklist.md` and work through it: read "
             "`index.md`, list every file (path 'LIST') and read the pages. Raw sources "
@@ -316,8 +332,7 @@ class Assistant:
         pending = self.wiki.pending_raw()
         if pending:
             prompt += "\n\nNot yet ingested:\n" + "\n".join(f"- {p}" for p in pending)
-        with self.wiki.journal("lint", "lint pass"):
-            return self._maintain(prompt, label="lint")
+        return prompt
 
     def _maintain(self, prompt: str | list[dict], label: str) -> str:
         """One maintenance conversation: Claude with the wiki write tools."""
@@ -368,6 +383,9 @@ class Assistant:
                     return result
                 if name == "rewind":
                     return self.rewind()
+                if name == "lint":
+                    self.queue_lint()
+                    return "Lint started. Its report will be shown to the user when it is done."
                 if name == "recall" and self.store is not None:
                     return self._recall(args["query"])
                 return self._wiki_tool(name, args)
@@ -404,7 +422,7 @@ class Assistant:
             return self.wiki.log(args["kind"], args["title"], args["body"])
         raise ValueError(f"Unknown tool {name!r}")
 
-    def _queue_wiki_job(self, job: WikiJob | IngestJob) -> None:
+    def _queue_wiki_job(self, job: WikiJob | IngestJob | LintJob) -> None:
         self.wiki_jobs += 1
         if not self.background:
             self._run_wiki_job(job)
@@ -421,23 +439,27 @@ class Assistant:
             finally:
                 self._wiki_queue.task_done()  # `rewind` and `delete_all` join the queue
 
-    def _run_wiki_job(self, job: WikiJob | IngestJob) -> None:
-        """Update the wiki for a chat capture, or ingest a file the user
-        asked for: a separate Claude conversation with the wiki tools. Its
-        outcome is reported as a notice. If it fails, the raw source stays
-        pending, to be retried by /ingest or `pkm-ingest`."""
-        asked_for = isinstance(job, IngestJob)
-        if asked_for:
+    def _run_wiki_job(self, job: WikiJob | IngestJob | LintJob) -> None:
+        """Update the wiki for a chat capture, ingest a file the user asked
+        for, or lint: a separate Claude conversation with the wiki tools. Its
+        outcome is reported as a notice. If an ingest fails, the raw source
+        stays pending, to be retried by /ingest or `pkm-ingest`."""
+        asked_for = not isinstance(job, WikiJob)
+        if isinstance(job, LintJob):
+            raw, kind, title, delete_raw = None, "lint", "lint pass", False
+        elif asked_for:
             raw, kind, title, delete_raw = job.rel, "ingest", job.rel, self.wiki.is_capture(job.rel)
         else:
             raw, kind, title, delete_raw = f"{job.raw}.md", "capture", job.facts[0], True
-        self._working_on = (raw, time.monotonic())
+        self._working_on = (raw or "a lint pass", time.monotonic())
         with (
             timing.turn(f"wiki: {title}", kind="background wiki") as t,
             self.wiki.journal(kind, title, raw=raw, delete_raw=delete_raw),
         ):
             try:
-                if asked_for:
+                if raw is None:
+                    message = self._lint_message()
+                elif asked_for:
                     message = self._ingest_message(job.rel, job.guidance)
                 else:
                     facts = "\n".join(f"- {f}" for f in job.facts)
@@ -451,13 +473,20 @@ class Assistant:
                     WIKI_TOOLS,
                     self.settings.wiki_model,
                 )
-                self.wiki.mark_ingested(raw)
-                outcome, failed = f"{'Ingested ' + raw if asked_for else 'Wiki updated'}: {reply}", False
+                if raw is None:
+                    outcome, failed = f"Lint report (/rewind takes its fixes back):\n{reply}", False
+                else:
+                    self.wiki.mark_ingested(raw)
+                    done = "Ingested " + raw if asked_for else "Wiki updated"
+                    outcome, failed = f"{done}: {reply}", False
             except Exception as e:
-                outcome, failed = (
-                    f"Wiki update FAILED for {raw} (/ingest or `uv run pkm-ingest` retries it): {e}",
-                    True,
-                )
+                if raw is None:
+                    outcome, failed = f"Lint FAILED: {e}", True
+                else:
+                    outcome, failed = (
+                        f"Wiki update FAILED for {raw} (/ingest or `uv run pkm-ingest` retries it): {e}",
+                        True,
+                    )
         self._working_on = None
         self._wiki_notices.put(Notice(outcome, failed, t, asked_for))
 

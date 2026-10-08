@@ -46,8 +46,8 @@ uv run llm-pkm          # chat; the vault is data/wiki/ (open that folder in Obs
 uv run pytest
 uv run pytest tests/test_wiki.py::test_raw_and_log   # one test (no linter is configured)
 uv run llm-pkm --timing # also print how long each step took
-                        # in the chat: /ingest (add a file from raw/), /rewind (undo the
-                        # last stored change), /delete-all
+                        # in the chat: /ingest (add a file from raw/), /lint, /status,
+                        # /rewind (undo the last stored change), /delete-all
 uv run llm-pkm --notices # also show how background wiki updates ended (failures always show)
 uv run pkm-ingest       # ingest every new .md/.txt/.pdf in data/wiki/raw/ (--dry-run to just list them)
 uv run pkm-lint         # health-check the wiki against its lint-checklist.md
@@ -115,6 +115,27 @@ Layout (`src/llm_pkm/`):
   gets its own maintenance conversation. `lint.py` (`pkm-lint`) runs the
   lint operation.
   **Never commit anything from the live vault.**
+- **Sources only (decided 2026-10-08):** Claude's general knowledge is
+  kept out of the memory. Wiki maintenance (ingest, capture updates, lint)
+  may write only what a raw source states: no added background, dates,
+  full names or corrections; a source that looks wrong is recorded as
+  written with the doubt noted. `remember` saves only what the user said.
+  Chat answers come from the wiki, the conversation and the everyday
+  context; outside knowledge is allowed only as a separate sentence
+  starting "Not from your wiki:". This is prompt wording
+  (`WIKI_CHAT_SYSTEM`, `MAINTAIN_SYSTEM`, `SCHEMA.md`, the lint
+  checklist's "Outside knowledge" item), not checked in code. Why: the
+  user must be able to trust that everything in the vault came from them
+  or their documents. Real run 2026-10-08: "Lisbon" stayed without a
+  country on its page, and chat labeled Portugal and Dune's author.
+  Chat should also speak up unasked when the wiki or a new statement
+  plainly contradicts general knowledge. For a capture that goes through
+  `remember`'s `doubt` field (the fact is saved as said; `run_turn` adds
+  the doubt to "Got it." without a second Claude call). The CLI prints
+  everything from the marker (`OUTSIDE` in `llm.py`) to the end of the
+  line in bright blue, so each such statement must be on its own line.
+  Tried for real: "Lisbon, the capital of Spain" got the blue correction,
+  and the page recorded the claim as written with a question for the user.
 - **Obsidian:** page frontmatter must be valid YAML for the Properties
   panel: `sources` is a list of quoted links (`- "[[raw/...]]"`); a bare
   `[[link]]` there is read as a nested list. Page titles are filenames and
@@ -131,6 +152,13 @@ Layout (`src/llm_pkm/`):
   `pkm-ingest` does all new files in the foreground, without guidance.
   First real PDF run 2026-10-07: a 2-page PDF took 20 s and the guidance
   was followed.
+- **Lint from the chat:** `/lint`, or asking in plain words (Claude has a
+  `lint` tool), queues a `LintJob` on the same worker as wiki updates; the
+  report arrives as a `Notice` with `asked_for=True`. `pkm-lint` runs the
+  same pass in the foreground. It is Claude reading every page against
+  `lint-checklist.md`; no code checks links or orphans yet. First real run
+  2026-10-08 on a 5-page throwaway vault: 58 s, sensible fixes and
+  questions.
 - **Rewind:** every change to the wiki (a capture's update, an ingest, a
   lint pass) runs inside `Wiki.journal`, which records the earlier content
   of each page it writes and the log's length in the vault's hidden
@@ -159,7 +187,10 @@ Layout (`src/llm_pkm/`):
 - `timing.py`: per-step timings. Code wraps a step in `span("name")`; the
   CLI prints each message's breakdown with `--timing`, and every message is
   logged to `data/timings.jsonl` either way.
-- `cli.py`: the terminal loop. `lambda_handler.py`: an untested sketch of the
+- `cli.py`: the terminal loop. All output goes through `say` (green) and
+  all input through `read` (the `you>` prompt and typed text in yellow);
+  `say_reply` prints "Not from your wiki:" lines in bright blue;
+  colors are off when output isn't a terminal or `NO_COLOR` is set. `lambda_handler.py`: an untested sketch of the
   Lambda entry point (the client passes the history in each request).
 
 Things we learned (most of these are about the on-hold vector path):

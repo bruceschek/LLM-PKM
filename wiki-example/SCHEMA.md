@@ -53,6 +53,10 @@ Rules:
 - Link generously with `[[wikilinks]]`; every page should link to at least
   one other page and be linked from [[index]].
 - Every fact cites a raw source. If the source is unclear, say so.
+- Sources only: the wiki holds what the raw sources say and nothing else.
+  The LLM adds no general knowledge of its own (background, dates, full
+  names, corrections), even when it is sure. A source that looks wrong is
+  recorded as written, with the doubt noted for the human.
 - When a new fact contradicts an old one, don't delete the old one. Mark it
   `(superseded 2026-10-02: moved to Denver)` and add the new one.
 - Keep pages short. Split a page when it passes about a screen.

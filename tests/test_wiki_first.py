@@ -43,7 +43,7 @@ def test_capture_goes_to_raw_and_then_the_wiki(assistant, monkeypatch):
     assert assistant.handle_message("my dog is Rex", []) == "Got it."
 
     chat, job = calls
-    assert chat[1] == ["remember", "wiki_read", "rewind"] and "index.md right now" in chat[0]
+    assert chat[1] == ["remember", "wiki_read", "rewind", "lint"] and "index.md right now" in chat[0]
     assert "- Now: " in chat[0] and "- Now: " in job[0]
     assert job[1] == ["wiki_read", "wiki_write", "wiki_log"] and job[2] == assistant.settings.wiki_model
     assert not (assistant.settings.data_dir / "facts.jsonl").exists()
@@ -266,3 +266,46 @@ def test_settings_in_tests_never_point_at_the_live_vault():
 
     settings = Settings.from_env()
     assert Path(tempfile.gettempdir()).resolve() in settings.wiki_dir.resolve().parents
+
+
+def test_lint_from_the_chat_runs_as_a_job_and_can_be_rewound(assistant, monkeypatch):
+    def fake_run_turn(client, settings, messages, execute, system, tools, model=None):
+        assert "lint-checklist.md" in messages[0]["content"]
+        assert [t["name"] for t in tools] == ["wiki_read", "wiki_write", "wiki_log"]
+        execute("wiki_write", {"path": "wiki/topics/Fixed.md", "content": "Fixed"})
+        return "Fixed one broken link."
+
+    monkeypatch.setattr(core, "run_turn", fake_run_turn)
+    assistant.queue_lint()
+    [notice] = assistant.take_notices()
+    assert notice.asked_for and not notice.failed
+    assert notice.message.endswith("Fixed one broken link.")
+    assert assistant.wiki.pending_raw() == []
+    assert "lint" in assistant.rewind()
+    assert not (assistant.wiki.root / "wiki/topics/Fixed.md").exists()
+
+
+def test_asking_in_plain_words_starts_a_lint(assistant, monkeypatch):
+    started = []
+    monkeypatch.setattr(assistant, "queue_lint", lambda: started.append(True))
+
+    def fake_run_turn(client, settings, messages, execute, system, tools, model=None):
+        assert "lint" in [t["name"] for t in tools]
+        return execute("lint", {})
+
+    monkeypatch.setattr(core, "run_turn", fake_run_turn)
+    assert "started" in assistant.handle_message("please tidy up the wiki", [])
+    assert started == [True]
+
+
+def test_slash_commands_reach_their_handlers(assistant, monkeypatch, capsys):
+    from llm_pkm import cli
+
+    called = []
+    monkeypatch.setattr(cli, "lint", lambda a: called.append("lint"))
+    monkeypatch.setattr(cli, "delete_all", lambda a, h: called.append("delete-all"))
+    entries = iter(["/lint", "/delete-all", "/lnt", "quit"])
+    monkeypatch.setattr("builtins.input", lambda prompt: next(entries))
+    cli.chat(assistant, [], None)
+    assert called == ["lint", "delete-all"]
+    assert "Did you mean /lint?" in capsys.readouterr().out
