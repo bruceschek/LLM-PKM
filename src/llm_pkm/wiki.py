@@ -11,12 +11,17 @@ raw sources are written only by `save_raw`, and `write` only touches
 import json
 import re
 import shutil
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
 EXAMPLE_DIR = Path(__file__).resolve().parents[2] / "wiki-example"
-RAW_SUFFIXES = {".md", ".txt"}  # what `pkm-ingest` picks up from raw/
+RAW_SUFFIXES = {".md", ".txt", ".pdf"}  # what ingest picks up from raw/
+MAX_PDF_BYTES = 20_000_000  # the API takes about 32 MB per request, and base64 adds a third
 MANIFEST = ".ingested.json"  # hidden, so Obsidian ignores it
+UNDO_DIR = ".undo"  # one file per change to the wiki, newest last (see `journal`)
+UNDO_KEPT = 20  # how many changes can be rewound
+CAPTURE_NOTE = "Raw source. Do not edit."  # first body line of a chat capture
 SEED_FILES = (  # copied from the example into a vault that lacks them
     "SCHEMA.md",
     "lint-checklist.md",
@@ -28,6 +33,7 @@ SEED_FILES = (  # copied from the example into a vault that lacks them
 class Wiki:
     def __init__(self, root: Path):
         self.root = root
+        self._journal: dict | None = None  # the change being recorded, if any
         self._seed()
 
     def _seed(self) -> None:
@@ -85,6 +91,8 @@ class Wiki:
 
     def write(self, path: str, content: str) -> str:
         full = self._resolve(path, write=True)
+        if self._journal is not None and path not in self._journal["files"]:
+            self._journal["files"][path] = full.read_text() if full.exists() else None
         full.parent.mkdir(parents=True, exist_ok=True)
         full.write_text(content if content.endswith("\n") else content + "\n")
         return f"Wrote {path}."
@@ -105,7 +113,7 @@ class Wiki:
         name = f"{now:%Y-%m-%d-%H%M%S}-{slug}"
         (self.root / "raw" / f"{name}.md").write_text(
             f"---\ncaptured: {now.isoformat(timespec='seconds')}\nvia: chat\n---\n"
-            f"Raw source. Do not edit.\n\n{text}\n"
+            f"{CAPTURE_NOTE}\n\n{text}\n"
         )
         return f"raw/{name}"
 
@@ -131,3 +139,85 @@ class Wiki:
 
     def read_raw(self, rel: str) -> str:
         return (self.root / rel).read_text()
+
+    def read_pdf(self, rel: str) -> bytes:
+        data = (self.root / rel).read_bytes()
+        if len(data) > MAX_PDF_BYTES:
+            raise ValueError(
+                f"{rel} is {len(data) / 1e6:.0f} MB; PDFs over {MAX_PDF_BYTES / 1e6:.0f} MB can't be sent."
+            )
+        if not data.startswith(b"%PDF"):
+            raise ValueError(f"{rel} doesn't look like a PDF.")
+        return data
+
+    def is_capture(self, rel: str) -> bool:
+        """True for a raw file the chat wrote (`save_raw`), as opposed to one
+        the user dropped in by hand."""
+        if Path(rel).suffix == ".pdf":
+            return False
+        head = self.read_raw(rel)[:300]
+        return head.startswith("---\ncaptured: ") and CAPTURE_NOTE in head
+
+    @contextmanager
+    def journal(self, kind: str, title: str, raw: str | None = None, delete_raw: bool = False):
+        """Record one change to the wiki so `rewind` can take it back: the
+        previous content of every page written inside the block, and how long
+        the log was. `raw` is the source being ingested; `delete_raw` says
+        rewinding should remove that file too (a chat capture) rather than
+        leave it to be ingested again (a file the user dropped in). The
+        record is kept even if the block fails partway."""
+        self._journal = entry = {
+            "kind": kind,
+            "title": title,
+            "raw": raw,
+            "delete_raw": delete_raw,
+            "files": {},  # path -> content before, or None if the page is new
+            "log_size": (self.root / "log.md").stat().st_size,
+        }
+        try:
+            yield
+        finally:
+            self._journal = None
+            undo = self.root / UNDO_DIR
+            undo.mkdir(exist_ok=True)
+            (undo / f"{datetime.now():%Y%m%d-%H%M%S-%f}.json").write_text(json.dumps(entry))
+            for old in sorted(undo.glob("*.json"))[:-UNDO_KEPT]:
+                old.unlink()
+
+    def rewind(self) -> dict | None:
+        """Take back the most recent recorded change; return its record, or
+        None if there is nothing left to rewind."""
+        records = sorted((self.root / UNDO_DIR).glob("*.json"))
+        if not records:
+            return None
+        entry = json.loads(records[-1].read_text())
+        for path, before in entry["files"].items():
+            if before is None:
+                (self.root / path).unlink(missing_ok=True)
+            else:
+                (self.root / path).write_text(before)
+        with (self.root / "log.md").open("r+") as f:
+            f.truncate(entry["log_size"])
+        if entry["raw"]:
+            manifest = self._manifest()
+            if manifest.pop(entry["raw"], None):
+                (self.root / MANIFEST).write_text(json.dumps(manifest, indent=1) + "\n")
+            if entry["delete_raw"]:
+                (self.root / entry["raw"]).unlink(missing_ok=True)
+        records[-1].unlink()
+        return entry
+
+    def counts(self) -> tuple[int, int]:
+        """(raw sources, wiki pages) in the vault."""
+        raw = sum(1 for p in (self.root / "raw").rglob("*") if p.is_file())
+        return raw, sum(1 for _ in (self.root / "wiki").rglob("*.md"))
+
+    def delete_all(self) -> None:
+        """Erase everything stored: raw sources, pages, the index, the log
+        and the rewind records. The rules (SCHEMA.md, lint-checklist.md), the
+        Obsidian settings and the owner's name stay. Cannot be undone."""
+        for sub in ("raw", "wiki", UNDO_DIR):
+            shutil.rmtree(self.root / sub, ignore_errors=True)
+        for name in ("index.md", "log.md", MANIFEST):
+            (self.root / name).unlink(missing_ok=True)
+        self._seed()

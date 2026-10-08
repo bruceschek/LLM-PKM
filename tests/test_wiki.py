@@ -61,7 +61,9 @@ def test_pending_raw_skips_ingested_hidden_and_other_types(tmp_path):
     (tmp_path / "raw" / "a.txt").write_text("a")
     (tmp_path / "raw" / "pic.png").write_bytes(b"x")
     (tmp_path / "raw" / ".hidden.md").write_text("h")
-    assert wiki.pending_raw() == ["raw/a.txt", "raw/b.md"]
+    (tmp_path / "raw" / "c.pdf").write_bytes(b"%PDF-1.4 x")
+    assert wiki.pending_raw() == ["raw/a.txt", "raw/b.md", "raw/c.pdf"]
+    wiki.mark_ingested("raw/c.pdf")
     wiki.mark_ingested("raw/a.txt")
     assert wiki.pending_raw() == ["raw/b.md"]
 

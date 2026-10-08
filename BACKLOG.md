@@ -20,6 +20,9 @@ W. **Wiki-first prototype** (Karpathy's LLM Wiki pattern, no fact store)
    - [ ] Try it on the live vault: capture, ask, open `data/wiki/` in
      Obsidian, run `pkm-lint`. Check Haiku still picks the right pages
      once the index is long.
+   - [x] 2026-10-06: everyday context (owner's name, date and time,
+     public holidays); `/rewind` (also in plain words) and `/delete-all`
+     (must type DELETE).
    - [ ] File useful answers back into the wiki (the gist's query step 3).
      Chat can't write pages; give it a tool that queues a maintenance job.
    - [ ] Lint from inside the chat ("lint the wiki"), and a code-side check
@@ -27,7 +30,10 @@ W. **Wiki-first prototype** (Karpathy's LLM Wiki pattern, no fact store)
      reading every page.
    - [ ] Superseded facts: check the maintenance conversation marks the old
      fact as the schema says.
-   - [ ] Ingest: `--watch` mode; PDFs and web clips; long sources.
+   - [x] 2026-10-07: PDFs can be ingested; `/ingest` in the chat, with
+     optional guidance on what to keep.
+   - [ ] Ingest: `--watch` mode; web clips; long sources (a text file is cut
+     at 100,000 characters, a PDF at 20 MB); other formats (Word, images).
    - [ ] When the index outgrows the prompt: split it by category, or add
      search over the pages (the point at which vectors might come back).
 

@@ -46,8 +46,10 @@ uv run llm-pkm          # chat; the vault is data/wiki/ (open that folder in Obs
 uv run pytest
 uv run pytest tests/test_wiki.py::test_raw_and_log   # one test (no linter is configured)
 uv run llm-pkm --timing # also print how long each step took
+                        # in the chat: /ingest (add a file from raw/), /rewind (undo the
+                        # last stored change), /delete-all
 uv run llm-pkm --notices # also show how background wiki updates ended (failures always show)
-uv run pkm-ingest       # ingest files dropped into data/wiki/raw/ (--dry-run to just list them)
+uv run pkm-ingest       # ingest every new .md/.txt/.pdf in data/wiki/raw/ (--dry-run to just list them)
 uv run pkm-lint         # health-check the wiki against its lint-checklist.md
 uv run pkm-timings      # median/max time per step, from data/timings.jsonl
 ```
@@ -118,6 +120,31 @@ Layout (`src/llm_pkm/`):
   `[[link]]` there is read as a nested list. Page titles are filenames and
   must be unique. The seeded `graph.json` colors raw sources, people,
   places and topics differently.
+- **Ingesting files:** .md, .txt and .pdf files put in the vault's `raw/`.
+  A PDF goes to Claude as a base64 `document` block (no text-extraction
+  library), so scanned pages and figures are read; the limit is 20 MB, and
+  pages cite it as `[[raw/name.pdf]]`, which Obsidian opens. `/ingest` in
+  the chat picks one new file, asks the user what it is and what to keep
+  (passed to Claude as guidance), and queues an `IngestJob` on the same
+  worker as capture updates, so wiki changes never overlap. Its result is a
+  `Notice` with `asked_for=True`, shown even without `--notices`.
+  `pkm-ingest` does all new files in the foreground, without guidance.
+  First real PDF run 2026-10-07: a 2-page PDF took 20 s and the guidance
+  was followed.
+- **Rewind:** every change to the wiki (a capture's update, an ingest, a
+  lint pass) runs inside `Wiki.journal`, which records the earlier content
+  of each page it writes and the log's length in the vault's hidden
+  `.undo/` (last 20 kept). `Assistant.rewind` takes back the newest record,
+  deletes a chat capture's raw file (a hand-dropped file is kept and goes
+  back to pending), and removes that turn from the session history. It is
+  both the `/rewind` command and a `rewind` tool, so plain words work.
+  It waits for any running wiki update first.
+- **Delete all:** `/delete-all` in the chat, which requires typing `DELETE`.
+  Claude has no tool for it, so the confirmation can't be skipped. It
+  erases raw sources, pages, index, log, `.undo/`, `facts.jsonl` and
+  `timings.jsonl` (which holds message text); it keeps `SCHEMA.md`,
+  `lint-checklist.md`, the Obsidian settings and the owner's name. A remote
+  store is not cleared.
 - `ambient.py`: everyday context that isn't in the wiki (so far the
   owner's name, the date and time, and the public holidays of `PKM_COUNTRY`, default US, from the
   `holidays` package). Each provider is a function returning one line;

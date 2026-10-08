@@ -32,7 +32,7 @@ class TimedStore(LocalStore):
 
 def test_remember_turn_is_timed_and_logged(tmp_path):
     settings = Settings.from_env()
-    settings = Settings(**{**vars(settings), "data_dir": tmp_path})
+    settings = Settings(**{**vars(settings), "data_dir": tmp_path, "wiki_dir": None})
     log = LocalStore(tmp_path / "facts.jsonl")
     client = fake_client(
         ("tool_use", [Block(type="tool_use", id="t1", name="remember", input={"fact": "X."})]),

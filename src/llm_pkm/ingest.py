@@ -1,7 +1,9 @@
 """`uv run pkm-ingest`: fold files dropped into the vault's raw/ folder into
 the wiki. Run it by hand after adding sources; files already ingested
 (tracked in the vault's .ingested.json) are skipped. It also retries chat
-captures whose wiki update failed.
+captures whose wiki update failed. Takes .md, .txt and .pdf files (a PDF is
+sent to Claude as a document, so scanned pages and figures are read too).
+`/ingest` in the chat does one file at a time and lets you say what to keep.
 
 Each file is a separate Claude conversation that writes the wiki pages. With
 a fact store (PKM_STORE other than wiki) Claude also calls `remember` for
@@ -39,7 +41,7 @@ def main() -> None:
         print(f"\n{rel} ...")
         try:
             print(assistant.ingest_file(rel))
-        except (anthropic.APIError, httpx.HTTPError, OSError, UnicodeDecodeError) as e:
+        except (anthropic.APIError, httpx.HTTPError, OSError, ValueError) as e:
             failed += 1
             print(f"  FAILED, will retry next run: {e}")
     if assistant.pending_notices() > 0:

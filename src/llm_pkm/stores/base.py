@@ -33,11 +33,12 @@ class Hit:
 
 @dataclass(frozen=True)
 class Notice:
-    """The outcome of work a store finished in the background, for the user."""
+    """The outcome of work finished in the background, for the user."""
 
     message: str
     failed: bool
     turn: "Turn"  # timing of the background work
+    asked_for: bool = False  # the user started this themselves (/ingest): always show it
 
 
 class MemoryStore(Protocol):

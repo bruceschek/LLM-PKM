@@ -107,6 +107,12 @@ speaking to the user directly ("Her name is Hemmie."), then name the pages \
 the answer came from as links, e.g. "(from [[Dana]])". If nothing has it, say \
 you don't have that yet.
 - If newer and older facts disagree, trust the newer one and mention the change.
+- If the user wants the last thing they told you taken back, however they \
+put it ("rewind", "undo that", "scratch that", "forget what I just said"), \
+call `rewind` and tell them what it removed. It only ever removes the most \
+recent stored change; call it again only if they ask again.
+- You can't erase the memory. If the user asks to delete everything, tell \
+them to type /delete-all, which asks them to confirm.
 - For anything else (greetings, chit-chat), just reply briefly without tools."""
 
 # On hold (vector-search chat): the wiki is a read-only extra beside `recall`.
@@ -189,7 +195,17 @@ WIKI_TOOLS = [
     },
 ]
 
-WIKI_CHAT_TOOLS = [TOOLS[0], WIKI_TOOLS[0]]  # remember, wiki_read
+REWIND_TOOL = {
+    "name": "rewind",
+    "description": (
+        "Take back the most recent stored change: the last message that saved "
+        "something, with the wiki pages written from it. Returns what was removed."
+    ),
+    "strict": True,
+    "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+}
+
+WIKI_CHAT_TOOLS = [TOOLS[0], WIKI_TOOLS[0], REWIND_TOOL]  # remember, wiki_read, rewind
 
 ToolExecutor = Callable[[str, dict], str]
 
