@@ -54,6 +54,18 @@ uv run pkm-lint         # health-check the wiki against its lint-checklist.md
 uv run pkm-timings      # median/max time per step, from data/timings.jsonl
 ```
 
+## MCP server (Claude Desktop / Claude Code connector)
+
+```
+claude mcp add llm-pkm uv -- run pkm-mcp   # register once per machine
+claude mcp remove llm-pkm                  # remove the registration
+```
+
+After a code change, exit and start a new session (`/exit`, then `claude` or
+`claude --continue`) — this kills and respawns the subprocess, and `uv run`
+picks up the latest code automatically. No re-registration needed.
+Remove and re-add only if the command itself changes (different binary or args).
+
 Request flow (wiki-first): `cli.py` -> `Assistant.handle_message` (`core.py`)
 -> `run_turn` (`llm.py`), which loops Claude <-> tools. Chat gets two tools:
 `remember` (saves the message as a `raw/` file and collects the facts) and

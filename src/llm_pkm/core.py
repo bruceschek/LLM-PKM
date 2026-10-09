@@ -15,6 +15,8 @@ from .ambient import everyday_context
 from .config import Settings
 from .llm import (
     MAINTAIN_SYSTEM,
+    OUTSIDE,
+    SAVED_REPLY,
     SYSTEM,
     TOOLS,
     WIKI_CHAT_SYSTEM,
@@ -421,6 +423,32 @@ class Assistant:
         if name == "wiki_log":
             return self.wiki.log(args["kind"], args["title"], args["body"])
         raise ValueError(f"Unknown tool {name!r}")
+
+    def mcp_tool(self, name: str, args: dict) -> str:
+        """Execute one tool call from the MCP server. Each call is standalone:
+        no conversation history, no batching across calls."""
+        if name == "remember":
+            source_text = args.get("source_text") or args["fact"]
+            fact = Fact(text=args["fact"], source_text=source_text)
+            if self.store is not None:
+                if self.log is not self.store:
+                    self.log.add(fact)
+                self.store.add(fact)
+                self.facts_saved += 1
+            if self.wiki:
+                raw_path = self.wiki.save_raw(source_text)
+                self._queue_wiki_job(WikiJob(raw_path, [fact.text]))
+            doubt = (args.get("doubt") or "").strip()
+            if doubt:
+                return f"{SAVED_REPLY}\n{OUTSIDE} {doubt.removeprefix(OUTSIDE).strip()}"
+            return SAVED_REPLY
+        if name == "wiki_read":
+            return self._wiki_tool("wiki_read", args)
+        if name == "rewind":
+            return self.rewind()
+        if name == "lint":
+            return self.lint()
+        raise ValueError(f"Unknown MCP tool: {name!r}")
 
     def _queue_wiki_job(self, job: WikiJob | IngestJob | LintJob) -> None:
         self.wiki_jobs += 1
