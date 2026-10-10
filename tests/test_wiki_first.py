@@ -43,9 +43,9 @@ def test_capture_goes_to_raw_and_then_the_wiki(assistant, monkeypatch):
     assert assistant.handle_message("my dog is Rex", []) == "Got it."
 
     chat, job = calls
-    assert chat[1] == ["remember", "wiki_read", "rewind", "lint"] and "index.md right now" in chat[0]
+    assert chat[1] == ["remember", "wiki_read", "rewind", "lint", "instruct"] and "index.md right now" in chat[0]
     assert "- Now: " in chat[0] and "- Now: " in job[0]
-    assert job[1] == ["wiki_read", "wiki_write", "wiki_log"] and job[2] == assistant.settings.wiki_model
+    assert job[1] == ["wiki_read", "wiki_write", "wiki_delete", "wiki_log"] and job[2] == assistant.settings.wiki_model
     assert not (assistant.settings.data_dir / "facts.jsonl").exists()
     assert assistant.wiki.pending_raw() == []
     assert (assistant.wiki.root / "wiki/topics/Pets.md").exists()
@@ -82,7 +82,7 @@ def test_ingest_and_lint_use_only_the_wiki_tools(assistant, monkeypatch):
 
     def fake_run_turn(client, settings, messages, execute, system, tools, model=None):
         seen.append(messages[0]["content"])
-        assert [t["name"] for t in tools] == ["wiki_read", "wiki_write", "wiki_log"]
+        assert [t["name"] for t in tools] == ["wiki_read", "wiki_write", "wiki_delete", "wiki_log"]
         assert "Three layers" in system  # the schema
         return "Done."
 
@@ -271,7 +271,7 @@ def test_settings_in_tests_never_point_at_the_live_vault():
 def test_lint_from_the_chat_runs_as_a_job_and_can_be_rewound(assistant, monkeypatch):
     def fake_run_turn(client, settings, messages, execute, system, tools, model=None):
         assert "lint-checklist.md" in messages[0]["content"]
-        assert [t["name"] for t in tools] == ["wiki_read", "wiki_write", "wiki_log"]
+        assert [t["name"] for t in tools] == ["wiki_read", "wiki_write", "wiki_delete", "wiki_log"]
         execute("wiki_write", {"path": "wiki/topics/Fixed.md", "content": "Fixed"})
         return "Fixed one broken link."
 
@@ -279,7 +279,9 @@ def test_lint_from_the_chat_runs_as_a_job_and_can_be_rewound(assistant, monkeypa
     assistant.queue_lint()
     [notice] = assistant.take_notices()
     assert notice.asked_for and not notice.failed
-    assert notice.message.endswith("Fixed one broken link.")
+    assert "Fixed one broken link." in notice.message
+    assert "Still failing the code checks" in notice.message  # the fake page has no frontmatter
+    assert "No frontmatter: wiki/topics/Fixed.md" in assistant.last_lint_report
     assert assistant.wiki.pending_raw() == []
     assert "lint" in assistant.rewind()
     assert not (assistant.wiki.root / "wiki/topics/Fixed.md").exists()
@@ -309,3 +311,118 @@ def test_slash_commands_reach_their_handlers(assistant, monkeypatch, capsys):
     cli.chat(assistant, [], None)
     assert called == ["lint", "delete-all"]
     assert "Did you mean /lint?" in capsys.readouterr().out
+
+
+PAGE = """---
+type: {kind}
+updated: 2026-10-09
+sources:
+  - "[[raw/notes.txt]]"
+---
+{body}
+"""
+
+
+def test_code_checks_find_the_mechanical_problems(assistant):
+    from llm_pkm.checks import check
+
+    root = assistant.wiki.root
+    (root / "raw/notes.txt").write_text("notes")
+    for path, kind, body in [
+        ("wiki/people/Dana.md", "person", "Mother of [[Theo]]. From [[raw/notes.txt]]. `[[not a link]]`"),
+        ("wiki/people/Theo.md", "person", "Son of [[Dana|his mum]]; lives in [[Denver]]. [[raw/notes.txt]]"),
+        ("wiki/places/Reno.md", "topic", "# Reno\nNothing cited."),
+        ("wiki/index.md", "topic", "A second index. [[raw/notes.txt]]"),
+    ]:
+        (root / path).parent.mkdir(exist_ok=True)
+        (root / path).write_text(PAGE.format(kind=kind, body=body))
+    (root / "wiki/topics").mkdir()
+    (root / "wiki/topics/Bare.md").write_text("---\ntype: topic\nsources: [[raw/notes]]\n---\nSee [[Dana]]. [[raw/notes.txt]]\n")
+    (root / "index.md").write_text("# Index\n- [[Dana]]\n- [[Theo]]\n- [[Bare]]\n- [[Gone]]\n")
+
+    assert sorted(check(assistant.wiki)) == sorted([
+        "Duplicate title (titles must be unique): index.md, wiki/index.md",
+        "Broken link in wiki/people/Theo.md: [[Denver]] matches no file",
+        "Broken link in index.md: [[Gone]] matches no file",
+        "Misplaced page: wiki/index.md is not in wiki/people, wiki/places or wiki/topics",
+        "Not in index.md: wiki/index.md",
+        "Orphan: no other page links to wiki/index.md",
+        "Orphan: no other page links to wiki/places/Reno.md",
+        "Not in index.md: wiki/places/Reno.md",
+        "Frontmatter type 'topic' doesn't match its folder (place): wiki/places/Reno.md",
+        "Starts with a # Title heading (the filename is the title): wiki/places/Reno.md",
+        "Broken link in wiki/topics/Bare.md: [[raw/notes]] matches no file",
+        "Orphan: no other page links to wiki/topics/Bare.md",
+        "Frontmatter has no sources list (or it isn't written as a list): wiki/topics/Bare.md",
+    ])
+
+
+def test_lint_is_given_the_code_findings_and_its_own_model(assistant, monkeypatch):
+    assistant.settings = dataclasses.replace(assistant.settings, lint_model="the-lint-model")
+    (assistant.wiki.root / "wiki/topics").mkdir()
+    (assistant.wiki.root / "wiki/topics/Lone.md").write_text("no frontmatter")
+    seen = []
+
+    def fake_run_turn(client, settings, messages, execute, system, tools, model=None):
+        seen.append((messages[0]["content"], model))
+        (assistant.wiki.root / "wiki/topics/Lone.md").unlink()
+        return "Removed it."
+
+    monkeypatch.setattr(core, "run_turn", fake_run_turn)
+    assistant.queue_lint()
+    [notice] = assistant.take_notices()
+    message, model = seen[0]
+    assert model == "the-lint-model"
+    assert "- No frontmatter: wiki/topics/Lone.md" in message and "questions.md" in message
+    assert notice.message.endswith("Removed it.")  # nothing left for the code checks to find
+
+    assistant.queue_lint()
+    assert "are all fine: skip them" in seen[1][0]
+
+
+def test_an_instruction_becomes_a_wiki_job_and_can_be_rewound(assistant, monkeypatch):
+    root = assistant.wiki.root
+    (root / "wiki/topics").mkdir()
+    (root / "wiki/topics/Old.md").write_text("old page\n")
+    (root / "questions.md").write_text("# Open questions\n\n## Open\n- [ ] **Q1** which year?\n\n## Answered\n")
+    assistant.last_lint_report = "Lint said: Q1 added."
+    calls = []
+
+    def fake_run_turn(client, settings, messages, execute, system, tools, model=None):
+        calls.append((system, messages, model))
+        if len(calls) == 1:  # the chat turn
+            assert "**Q1** which year?" in system and "Lint said: Q1 added." in system
+            assert "Passed on." in execute("instruct", {"instruction": "Rename Old to New."})
+            assert "Saved." in execute("remember", {"fact": "The trip was in 2026."})
+            return "Passed on; the outcome will appear when it's done."
+        execute("wiki_write", {"path": "wiki/topics/New.md", "content": "new page"})
+        assert execute("wiki_delete", {"path": "wiki/topics/Old.md"}) == "Deleted wiki/topics/Old.md."
+        execute("wiki_write", {"path": "questions.md", "content": "# Open questions\n\n## Open\n\n## Answered\n- [x] **Q1** 2026\n"})
+        execute("wiki_log", {"kind": "edit", "title": "rename", "body": "Old to New"})
+        return "Renamed Old to New."
+
+    monkeypatch.setattr(core, "run_turn", fake_run_turn)
+    history = []
+    assert "Passed on" in assistant.handle_message("rename Old to New; it was 2026", history)
+
+    job = calls[1][1][0]["content"]
+    assert "- Rename Old to New." in job and "- The trip was in 2026." in job
+    assert "**Q1** which year?" in job and calls[1][2] == assistant.settings.wiki_model
+    [notice] = assistant.take_notices()
+    assert notice.asked_for and notice.message == "Wiki changed: Renamed Old to New."
+    assert not (root / "wiki/topics/Old.md").exists() and assistant.wiki.open_questions() == ""
+    assert len(list((root / "raw").iterdir())) == 1 and assistant.wiki.pending_raw() == []
+
+    assert "Rewound the last edit" in assistant.rewind()
+    assert (root / "wiki/topics/Old.md").read_text() == "old page\n"
+    assert not (root / "wiki/topics/New.md").exists()
+    assert assistant.wiki.open_questions() == "- [ ] **Q1** which year?"
+    assert list((root / "raw").iterdir()) == [] and history == []
+
+
+def test_only_wiki_pages_can_be_deleted(assistant):
+    with pytest.raises(ValueError):
+        assistant.wiki.delete("index.md")
+    with pytest.raises(ValueError):
+        assistant.wiki.delete("raw/x.md")
+    assert assistant.wiki.delete("wiki/people/Nobody.md") == "No such page: wiki/people/Nobody.md"

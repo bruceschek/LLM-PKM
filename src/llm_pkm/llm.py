@@ -44,14 +44,20 @@ don't have that yet.
 TOOLS = [
     {
         "name": "remember",
-        "description": "Save one fact about the user to long-term memory.",
+        "description": (
+            "Save one fact the user stated to long-term memory. It can be about "
+            "them or about anything else they want kept."
+        ),
         "strict": True,
         "input_schema": {
             "type": "object",
             "properties": {
                 "fact": {
                     "type": "string",
-                    "description": "A single self-contained statement about the user.",
+                    "description": (
+                        "A single self-contained statement: about \"the user\" if it "
+                        "concerns them, otherwise about its own subject."
+                    ),
                 },
                 "also_asks": {
                     "type": "boolean",
@@ -100,14 +106,31 @@ TOOLS = [
 # Wiki-first chat. core.py appends the current index.md (and any captures not
 # yet folded in) to this on every turn, which saves the round trip of reading
 # the index before each answer.
-WIKI_CHAT_SYSTEM = """You are the user's personal memory. What they tell you is \
-kept as a markdown wiki (an Obsidian vault) that they also browse themselves.
+WIKI_CHAT_SYSTEM = """You are the user's knowledge store: a place where they \
+keep anything they choose to, about themselves or about the world. What \
+they tell you is kept as a markdown wiki (an Obsidian vault) that they also \
+browse themselves.
 
-- When the user states a fact, call `remember` once per distinct fact. Rewrite \
-each fact as a self-contained statement about "the user" that will make sense \
-on its own months from now (e.g. "my wife's name is Hemmie" becomes "The \
-user's wife's name is Hemmie."), and turn relative times into actual dates \
-("tomorrow" becomes the date). Then reply with a very short acknowledgement \
+Every message is one of three things: a question, a request (rewind, lint, \
+delete, or a change to the wiki), or something to save. A message that states anything and is not a \
+question or a request is something to save, always. That includes notes on \
+a person, place, subject or event that has nothing to do with the user's \
+own life, and text that reads like an encyclopedia entry or was pasted from \
+somewhere: the user is adding it to their wiki. You never judge whether a \
+statement is personal enough, relevant enough or worth keeping. Never ask \
+why they are telling you or how it connects to them, never point out that \
+it is general knowledge or not about them, and never reply to a statement \
+without having saved it.
+
+- To save, call `remember` once per distinct fact, leaving none out, \
+however long the message; the facts can be about the user, people they \
+know, or the wider world (a scientist's life, a passage from a book, how \
+something works). Rewrite each fact as a self-contained \
+statement that will make sense on its own months from now: about "the \
+user" if it concerns them (e.g. "my wife's name is Hemmie" becomes "The \
+user's wife's name is Hemmie."), otherwise about its own subject ("Max \
+Planck won the Nobel Prize in Physics in 1918."). Turn relative times into \
+actual dates ("tomorrow" becomes the date). Then reply with a very short acknowledgement \
 such as "Got it." Save only what the user said: add no detail, correction \
 or background of your own. If a fact plainly contradicts well-established \
 general knowledge (not merely surprising, and never a private matter you \
@@ -126,7 +149,10 @@ the answer came from as links, e.g. "(from [[Dana]])". If nothing has it, say \
 you don't have that yet.
 - Facts come from three places only: the wiki, what the user said in this \
 conversation, and the everyday context at the end of this prompt. Your own \
-general knowledge is not the user's memory. Never use it to fill in, guess \
+general knowledge is not the user's memory. This rule limits only what \
+you add in your replies and never what you save: whatever the user tells \
+you is theirs to keep, even when it is also general knowledge. Never use \
+your own knowledge to fill in, guess \
 or correct anything about the user, the people they know or their life, and \
 never blend it into an answer drawn from the wiki. You may add it in two \
 cases: where it would really help (the question is about the wider world, \
@@ -142,6 +168,19 @@ question, say that first.
 put it ("rewind", "undo that", "scratch that", "forget what I just said"), \
 call `rewind` and tell them what it removed. It only ever removes the most \
 recent stored change; call it again only if they ask again.
+- If the user wants the wiki itself changed (a heading, a page's name, a \
+merge, a deletion, a correction, a new page), or answers or decides one of \
+the open questions listed below or raised in a lint report, call `instruct` \
+with a complete instruction. You can't change pages yourself, and `remember` \
+alone won't do it. Work out which page or question they mean from the index, \
+the open questions and the conversation, and ask only if it really could be \
+either of two things. If their answer also states a fact (a year, a name, a \
+relationship), call `remember` for the fact as well. Then say it has been \
+passed on and that the outcome will appear when it is done; don't claim it \
+is done.
+- Never guess at why something in the wiki or this program went wrong \
+("a sync issue", "an indexing delay"). Say what you can see and that you \
+don't know the cause.
 - If the user asks to lint, check, tidy or health-check the wiki, however \
 they put it, call `lint` once and tell them it has started and that the \
 report will appear when it is done. Don't check the wiki yourself instead.
@@ -162,20 +201,37 @@ separately."""
 # (a chat capture, a file from pkm-ingest, a lint pass), away from the chat.
 MAINTAIN_SYSTEM = """You maintain a markdown wiki (an Obsidian vault) of what the \
 user tells their personal memory, following the rules below. Each request is \
-one operation: ingest a raw source, or lint.
+one operation: ingest a raw source, carry out an instruction from the user, \
+or lint.
 
 To ingest: `wiki_read` `index.md` and any pages the source touches, then \
 `wiki_write` the new or updated pages and the updated index, citing the raw \
 source, then `wiki_log`. Keep it quick: a short fact touches one to three \
 pages. Reply with one short line saying what you did.
 
+Decide rather than ask. The user wants the wiki kept up without being \
+consulted: follow the standing rulings in the rules below ("Decide, don't \
+ask"), make the page when in doubt, and keep going. A question for the user \
+is for the rare case those rulings name. It goes in `questions.md` under \
+Open, once, as `- [ ] **Qn** (date, [[page]]) the question`, with the next \
+free number; first read that file and never ask anything already there, \
+open or answered. When a source or an instruction answers an open \
+question, apply the answer to the pages and move the question under \
+Answered as `- [x] **Qn** ... Answer: ... (source link)`.
+
+To carry out an instruction: do what it says to the pages it means \
+(`wiki_delete` removes a page that has been merged or renamed away), keep \
+the index and links right, and `wiki_log` it with kind `edit`. What the user \
+states or decides in an instruction is a source like any other: cite its \
+raw file.
+
 Use no outside knowledge, in any operation. Everything you write in the \
 wiki must come from a raw source (or, for a chat capture, the facts listed \
 with it). Don't add background, dates, full names, spellings, explanations \
 or corrections that you know but the source doesn't state, however sure you \
 are, and don't guess at how people or things are related. If a source looks \
-wrong or incomplete, record what it says and note the doubt as a question \
-for the user; don't fix it. The everyday context below (today's date, the \
+wrong or incomplete, record what it says with the doubt noted beside it on \
+the page; don't fix it. The everyday context below (today's date, the \
 owner's name) is only for working out dates and who "the user" is. An \
 actual date worked out from a relative one ("last week") and the day the \
 source was captured is not outside knowledge: keep it.
@@ -214,12 +270,23 @@ WIKI_TOOLS = [
     },
     {
         "name": "wiki_write",
-        "description": "Create or fully replace index.md or a page under wiki/. Raw sources and the log can't be written this way.",
+        "description": "Create or fully replace index.md, questions.md or a page under wiki/. Raw sources and the log can't be written this way.",
         "strict": True,
         "input_schema": {
             "type": "object",
             "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
             "required": ["path", "content"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "wiki_delete",
+        "description": "Delete a page under wiki/: a duplicate, or one whose content you have merged or renamed into another page. Fix the links that pointed to it.",
+        "strict": True,
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
             "additionalProperties": False,
         },
     },
@@ -230,7 +297,7 @@ WIKI_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "enum": ["ingest", "query", "lint", "schema"]},
+                "kind": {"type": "string", "enum": ["ingest", "query", "lint", "schema", "edit"]},
                 "title": {"type": "string"},
                 "body": {"type": "string"},
             },
@@ -262,8 +329,35 @@ LINT_TOOL = {
     "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
 }
 
-# remember, wiki_read, rewind, lint
-WIKI_CHAT_TOOLS = [TOOLS[0], WIKI_TOOLS[0], REWIND_TOOL, LINT_TOOL]
+INSTRUCT_TOOL = {
+    "name": "instruct",
+    "description": (
+        "Pass on something the user wants done to the wiki itself, or their "
+        "answer to a question the wiki asked: change a heading, rename, merge, "
+        "split or delete a page, fix or reword something, create a page, apply "
+        "a decision. It is carried out in the background by the process that "
+        "writes the pages, and the user is shown the outcome; you are not."
+    ),
+    "strict": True,
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "instruction": {
+                "type": "string",
+                "description": (
+                    "What to do, complete enough to act on without this "
+                    "conversation: name the page, quote the question being "
+                    "answered, and give the user's words for what they decided."
+                ),
+            },
+        },
+        "required": ["instruction"],
+        "additionalProperties": False,
+    },
+}
+
+# remember, wiki_read, rewind, lint, instruct
+WIKI_CHAT_TOOLS = [TOOLS[0], WIKI_TOOLS[0], REWIND_TOOL, LINT_TOOL, INSTRUCT_TOOL]
 
 ToolExecutor = Callable[[str, dict], str]
 

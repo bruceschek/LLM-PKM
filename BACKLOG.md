@@ -148,3 +148,11 @@ W. **Wiki-first prototype** (Karpathy's LLM Wiki pattern, no fact store)
 - 2026-09-22: Created repo, `CLAUDE.md`, and `BACKLOG.md`.
 - 2026-09-23: First draft of the local prototype (uv, Python 3.13): capture
   and recall in a terminal chat (`uv run llm-pkm`), before touching AWS.
+- 2026-10-09: `uv run llm-pkm --script FILE`: feed a text file to the chat,
+  one entry per line, waiting for each wiki update before the next line.
+  First real run the same day: 22 entries, 735 s.
+- 2026-10-09: Chat accepts facts on any subject (it had refused general
+  knowledge). Lint and wiki updates decide rather than ask: standing
+  rulings in `SCHEMA.md`, `questions.md`, the `instruct` chat tool,
+  `wiki_delete`, code checks (`pkm-lint --check`), `PKM_LINT_MODEL`. Fixed:
+  .txt and .pdf sources were invisible to lint.

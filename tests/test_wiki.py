@@ -74,3 +74,20 @@ def test_chat_capture_is_pending_until_marked(tmp_path):
     assert wiki.pending_raw() == [f"{path}.md"]
     wiki.mark_ingested(f"{path}.md")
     assert wiki.pending_raw() == []
+
+
+def test_text_and_pdf_sources_are_listed_and_readable(tmp_path):
+    """A lint pass once reported an ingested .txt source as missing: LIST
+    showed only .md files and wiki_read refused anything else."""
+    from llm_pkm.wiki import Wiki
+
+    wiki = Wiki(tmp_path / "vault")
+    (wiki.root / "raw" / "bio notes.txt").write_text("Born 1879.")
+    (wiki.root / "raw" / "scan.pdf").write_bytes(b"%PDF-1.4")
+    listing = wiki.list_pages().split("\n")
+    assert "raw/bio notes.txt" in listing and "raw/scan.pdf" in listing
+    assert wiki.read("raw/bio notes.txt") == "Born 1879."
+    assert wiki.read("[[raw/bio notes.txt]]") == "Born 1879."
+    assert "can't be read" in wiki.read("raw/scan.pdf")
+    assert wiki.read("raw/../SCHEMA.txt").startswith("No such file")
+    assert wiki.read("raw/nothing.txt").startswith("No such file")

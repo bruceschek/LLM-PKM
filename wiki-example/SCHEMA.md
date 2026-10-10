@@ -17,7 +17,8 @@ https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
      must be unique across the whole vault, and can't contain `/ \ : # ^ [ ] |`.
 3. **The schema** (this file).
 
-Two special files at the vault root: [[index]] (catalog) and [[log]] (history).
+Three special files at the vault root: [[index]] (catalog), [[log]]
+(history) and [[questions]] (what the LLM is waiting for the human to settle).
 
 ## Page format
 
@@ -61,6 +62,60 @@ Rules:
   `(superseded 2026-10-02: moved to Denver)` and add the new one.
 - Keep pages short. Split a page when it passes about a screen.
 
+## Decide, don't ask
+
+The human wants the wiki kept up without being consulted. The LLM decides,
+by these standing rulings, and records what it decided where a reader will
+see it. None of them is outside knowledge: each only settles how to write
+down what the sources already say.
+
+- **Make the page.** Every person, place, organization or subject a source
+  names gets its own page, even from a single mention and even if all that
+  can be written is one line saying where it was mentioned (a stub). When
+  unsure whether something deserves a page, it does. Never ask whether to
+  create one.
+- **A date with no year:** use the year given in the facts listed with the
+  capture (the chat works it out from what was said: "we are going in
+  January" is the coming January). If there is none, use the year the
+  source was captured. Write the full date and note where the year came
+  from.
+- **Vague or conflicting wording inside one source** ("mid 30s" in one
+  line, "1939-1945" in another): use the source's own words on the page, in
+  quotes if needed, and don't turn them into something more exact.
+- **A name shared by two people** (a nickname that is also someone else's
+  name): keep it as an alias where the source gives it, and add a line on
+  each page pointing to the other ("not to be confused with [[...]]").
+- **An abbreviation or short name the source doesn't expand** stays as
+  written. Don't expand it and don't ask what it stands for.
+- **A relationship the sources don't state** is left unstated. Don't ask
+  about it.
+- **Something missing that would be nice to know** (a surname, a date, a
+  fuller title) is not a question. Leave the gap.
+- **Duplicates and leftovers:** merge duplicate pages into one and delete
+  the other; delete a stray file that copies [[index]].
+- **A source that can't be found:** say so in the lint report as an error.
+  Don't ask the human to re-add it and don't drop the pages that cite it.
+
+Ask only in two cases: two sources flatly contradict each other and
+neither is newer, or the only fix would delete something a source states.
+Then put the question in [[questions]] under Open, once:
+
+```
+- [ ] **Q7** (2026-10-09, [[Dana]]) One capture says Denver, another Boulder, same day. Which?
+```
+
+Number questions in order. Before adding one, read [[questions]]: anything
+already there, open or answered, is never asked again. When a source or an
+instruction from the human answers one, apply the answer to the pages and
+move the line under Answered:
+
+```
+- [x] **Q7** (2026-10-09, [[Dana]]) ... Answer: Denver. ([[raw/2026-10-10-denver]])
+```
+
+The human may also type an answer under a question in [[questions]]
+itself; treat that text as the answer at the next lint.
+
 ## Operations
 
 ### Ingest (a new source arrives)
@@ -80,10 +135,17 @@ Rules:
    section, so the work isn't lost in chat. Log it. (Not automatic yet: the
    chat can read the wiki but not write it.)
 
+### Edit (the human asks for a change)
+
+The human may tell the chat to change the wiki itself (rename or merge a
+page, fix a heading, delete something, settle a question). Their message is
+saved as a raw source; do what it says, cite it for anything it states,
+keep [[index]] and the links right, and log it as `edit`.
+
 ### Lint (periodic health check)
 
-Follow [[lint-checklist]]. Fix what's safe, list what needs a human decision,
-log the pass.
+Follow [[lint-checklist]]. Fix everything the rulings above let you decide,
+put the rare real question in [[questions]], log the pass.
 
 ## Log format
 
@@ -93,4 +155,4 @@ Each entry starts with `## [YYYY-MM-DD] kind | title` so it can be grepped:
 grep "^## \[" log.md | tail -5
 ```
 
-`kind` is one of `ingest`, `query`, `lint`, `schema`.
+`kind` is one of `ingest`, `query`, `lint`, `schema`, `edit`.

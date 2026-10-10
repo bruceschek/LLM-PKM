@@ -4,9 +4,10 @@ maintains, following Karpathy's LLM Wiki pattern. See `wiki-example/SCHEMA.md`.
 The live vault holds real user data and lives under `data/` (git-ignored).
 `wiki-example/` in the repo is invented sample data only.
 
-Claude gets three tools (read, write, log). They are confined to the vault:
-raw sources are written only by `save_raw`, and `write` only touches
-`index.md` and pages under `wiki/`."""
+Claude gets four tools (read, write, delete, log). They are confined to the
+vault: raw sources are written only by `save_raw`, `write` only touches
+`index.md`, `questions.md` and pages under `wiki/`, and `delete` only pages
+under `wiki/`."""
 
 import json
 import re
@@ -22,6 +23,14 @@ MANIFEST = ".ingested.json"  # hidden, so Obsidian ignores it
 UNDO_DIR = ".undo"  # one file per change to the wiki, newest last (see `journal`)
 UNDO_KEPT = 20  # how many changes can be rewound
 CAPTURE_NOTE = "Raw source. Do not edit."  # first body line of a chat capture
+WRITABLE_ROOT_FILES = ("index.md", "questions.md")
+LOG_KINDS = ("ingest", "query", "lint", "schema", "edit")
+QUESTIONS_SEED = (
+    "# Open questions\n\nThings the wiki couldn't settle from its sources. Answer one in the "
+    "chat, or write the answer under it here; the next update applies it and moves it to "
+    "Answered. A question is asked once and never again. Rules: [[SCHEMA]].\n\n"
+    "## Open\n\n## Answered\n"
+)
 SEED_FILES = (  # copied from the example into a vault that lacks them
     "SCHEMA.md",
     "lint-checklist.md",
@@ -50,6 +59,8 @@ class Wiki:
                 "Rules: [[SCHEMA]]. History: [[log]].\n\n## People\n\n## Places\n\n"
                 "## Topics\n\n## Raw sources\n"
             )
+        if not (self.root / "questions.md").exists():
+            (self.root / "questions.md").write_text(QUESTIONS_SEED)
         if not (self.root / "log.md").exists():
             (self.root / "log.md").write_text(
                 "# Log\n\nAppend-only. Newest at the bottom.\n"
@@ -66,8 +77,8 @@ class Wiki:
         full = (self.root / rel).resolve()
         if not full.is_relative_to(self.root.resolve()):
             raise ValueError(f"Bad path {path!r}: outside the vault.")
-        if write and rel.parts[0] != "wiki" and rel.as_posix() != "index.md":
-            raise ValueError("Can only write index.md and pages under wiki/.")
+        if write and rel.parts[0] != "wiki" and rel.as_posix() not in WRITABLE_ROOT_FILES:
+            raise ValueError("Can only write index.md, questions.md and pages under wiki/.")
         return full
 
     def read(self, path: str) -> str:
@@ -75,6 +86,8 @@ class Wiki:
         resolves a link: `Dana`, `[[Dana]]` and `wiki/people/Dana.md` all work."""
         name = path.strip().removeprefix("[[").removesuffix("]]")
         name = re.split(r"[|#]", name)[0].strip()  # drop a link's alias or heading
+        if Path(name).suffix in RAW_SUFFIXES - {".md"}:  # a file the user put in raw/
+            return self._read_dropped(name)
         if not name.endswith(".md"):
             name += ".md"
         full = self._resolve(name)
@@ -85,9 +98,24 @@ class Wiki:
             full = matches[0]
         return full.read_text()
 
+    def _read_dropped(self, name: str) -> str:
+        """A .txt or .pdf raw source, which only ever lives in raw/."""
+        rel = Path(name)
+        full = (self.root / rel).resolve()
+        inside = full.is_relative_to((self.root / "raw").resolve())
+        if rel.is_absolute() or ".." in rel.parts or not inside or not full.is_file():
+            return f"No such file: {name}"
+        if rel.suffix == ".pdf":
+            return f"{name} is in the vault, but a PDF can't be read with this tool."
+        return full.read_text()
+
     def list_pages(self) -> str:
-        pages = sorted(p.relative_to(self.root).as_posix() for p in self.root.rglob("*.md"))
-        return "\n".join(pages)
+        """Every file Claude can cite: the .md files anywhere in the vault,
+        and the other sources in raw/ (.txt, .pdf)."""
+        files = {p for p in self.root.rglob("*.md")}
+        files |= {p for p in (self.root / "raw").rglob("*") if p.suffix in RAW_SUFFIXES}
+        visible = (p.relative_to(self.root) for p in files if p.is_file())
+        return "\n".join(sorted(r.as_posix() for r in visible if not r.name.startswith(".")))
 
     def write(self, path: str, content: str) -> str:
         full = self._resolve(path, write=True)
@@ -97,9 +125,30 @@ class Wiki:
         full.write_text(content if content.endswith("\n") else content + "\n")
         return f"Wrote {path}."
 
+    def delete(self, path: str) -> str:
+        """Remove a page under wiki/ (a duplicate, or one merged or renamed
+        into another). Recorded like a write, so `rewind` brings it back."""
+        full = self._resolve(path, write=True)
+        if Path(path).parts[0] != "wiki":
+            raise ValueError("Can only delete pages under wiki/.")
+        if not full.is_file():
+            return f"No such page: {path}"
+        if self._journal is not None and path not in self._journal["files"]:
+            self._journal["files"][path] = full.read_text()
+        full.unlink()
+        return f"Deleted {path}."
+
+    def open_questions(self) -> str:
+        """The Open section of questions.md: what the wiki is waiting for
+        the user to settle. Empty if there is nothing."""
+        path = self.root / "questions.md"
+        text = path.read_text() if path.exists() else ""
+        _, found, rest = text.partition("\n## Open")
+        return rest.split("\n## ")[0].strip() if found else ""
+
     def log(self, kind: str, title: str, body: str, now: datetime | None = None) -> str:
-        if kind not in ("ingest", "query", "lint", "schema"):
-            raise ValueError("kind must be ingest, query, lint or schema.")
+        if kind not in LOG_KINDS:
+            raise ValueError(f"kind must be one of: {', '.join(LOG_KINDS)}.")
         now = now or datetime.now()
         with (self.root / "log.md").open("a") as f:
             f.write(f"\n## [{now:%Y-%m-%d}] {kind} | {title}\n{body.strip()}\n")
@@ -214,10 +263,10 @@ class Wiki:
 
     def delete_all(self) -> None:
         """Erase everything stored: raw sources, pages, the index, the log
-        and the rewind records. The rules (SCHEMA.md, lint-checklist.md), the
+        the open questions and the rewind records. The rules (SCHEMA.md, lint-checklist.md), the
         Obsidian settings and the owner's name stay. Cannot be undone."""
         for sub in ("raw", "wiki", UNDO_DIR):
             shutil.rmtree(self.root / sub, ignore_errors=True)
-        for name in ("index.md", "log.md", MANIFEST):
+        for name in ("index.md", "log.md", "questions.md", MANIFEST):
             (self.root / name).unlink(missing_ok=True)
         self._seed()

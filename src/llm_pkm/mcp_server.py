@@ -17,10 +17,12 @@ _assistant: Assistant | None = None
 
 @mcp.tool()
 def remember(fact: str, source_text: str, doubt: str) -> str:
-    """Save one fact the user stated to long-term memory. Call once per distinct fact.
-    Rewrite each fact as a self-contained statement about "the user" that will make
-    sense on its own months from now (e.g. "my wife is Hemmie" becomes "The user's
-    wife's name is Hemmie."). Pass the user's verbatim message as source_text.
+    """Save one fact the user stated to long-term memory, whatever it is about: the
+    user, people they know, or the wider world. Never decline because it is general
+    knowledge. Call once per distinct fact. Rewrite each fact as a self-contained
+    statement that will make sense on its own months from now: about "the user" if it
+    concerns them (e.g. "my wife is Hemmie" becomes "The user's wife's name is
+    Hemmie."), otherwise about its own subject. Pass the user's verbatim message as source_text.
     Set doubt only if the fact plainly contradicts well-established general knowledge;
     leave it empty otherwise. The wiki is updated in the background after this returns."""
     assert _assistant is not None

@@ -28,12 +28,14 @@ from .llm import (
 )
 from .stores import Fact, LocalStore, MemoryStore, Notice, build_stores
 from .timing import span
+from .checks import check
 from .wiki import Wiki
 
 
 MAX_INGEST_CHARS = 100_000  # longer sources are cut off
 RECENT_WINDOW = timedelta(minutes=10)  # `recall` also lists facts saved this recently
 MAX_PENDING_SHOWN = 20  # captures not yet in the wiki that chat is told about
+MAX_REPORT_CHARS = 4000  # of the last lint report, kept in front of chat
 
 
 @dataclass
@@ -55,6 +57,17 @@ class IngestJob:
 @dataclass
 class LintJob:
     """A lint pass the user asked for (/lint, or in plain words, in the chat)."""
+
+
+@dataclass
+class InstructJob:
+    """Something the user told the chat to do to the wiki, or their answer to
+    a question it asked. Their message is saved as a raw source, like a
+    capture, so the change can cite it and `rewind` can take it back."""
+
+    raw: str  # vault path of the raw source, without .md
+    instructions: list[str]
+    facts: list[str]  # anything the same message also had remembered
 
 
 class Assistant:
@@ -84,7 +97,7 @@ class Assistant:
         self.wiki_jobs = 0  # wiki updates queued so far
         self.notices_seen = 0  # background outcomes already handed out by take_notices
         # One worker: wiki changes run one at a time, in order.
-        self._wiki_queue: queue.Queue[WikiJob | IngestJob] = queue.Queue()
+        self._wiki_queue: queue.Queue[WikiJob | IngestJob | LintJob | InstructJob] = queue.Queue()
         self._wiki_notices: queue.Queue[Notice] = queue.Queue()
         self._wiki_worker: threading.Thread | None = None
         self._working_on: tuple[str, float] | None = None  # the wiki job running now, and when it began
@@ -93,6 +106,7 @@ class Assistant:
         # to drop a rewound turn from the conversation too.
         self._captures: list[tuple[str, list[dict], dict, int]] = []
         self.last_turn: timing.Turn | None = None  # step timings of the latest message
+        self.last_lint_report: str | None = None  # so chat knows what the user is answering
 
     @classmethod
     def from_env(cls, background: bool = False) -> "Assistant":
@@ -152,6 +166,7 @@ class Assistant:
         Updating the wiki is not part of the reply: it's queued as a job."""
         saved: list[str] = []
         raw: list[str] = []
+        instructions: list[str] = []
         system, tools = SYSTEM, TOOLS
         if self.store is None:
             system = WIKI_CHAT_SYSTEM + everyday_context(self.settings) + self._wiki_context()
@@ -159,12 +174,17 @@ class Assistant:
         elif self.wiki:
             system += WIKI_QUERY_SYSTEM
             tools = TOOLS + WIKI_TOOLS[:1]  # wiki_read only
-        reply = self._converse(text, history, text, raw, saved, label=text, system=system, tools=tools)
-        if self.wiki and saved:
+        reply = self._converse(
+            text, history, text, raw, saved, label=text, system=system, tools=tools, instructions=instructions
+        )
+        if self.wiki and raw:
             first = next(m for m in reversed(history) if m["role"] == "user" and m["content"] == text)
             added = len(history) - _index_of(history, first)
             self._captures.append((raw[0], history, first, added))
-            self._queue_wiki_job(WikiJob(raw[0], saved))
+            if instructions:
+                self._queue_wiki_job(InstructJob(raw[0], instructions, saved))
+            else:
+                self._queue_wiki_job(WikiJob(raw[0], saved))
         return reply
 
     def rewind(self) -> str:
@@ -209,14 +229,25 @@ class Assistant:
         self._captures.clear()
         history.clear()
         self.last_turn = None
+        self.last_lint_report = None
         note = "" if self.store is None else f" The {self.settings.store} store was NOT cleared."
         return "Deleted everything." + note
 
     def _wiki_context(self) -> str:
-        """What wiki-first chat is given on every turn: the index, and the
-        raw sources the wiki hasn't caught up with (an update still running,
-        one that failed, or a file the user dropped in)."""
+        """What wiki-first chat is given on every turn: the index, the
+        questions the wiki is waiting on and its last lint report (so an
+        answer to either can be passed on), and the raw sources the wiki
+        hasn't caught up with (an update still running, one that failed, or
+        a file the user dropped in)."""
         text = "\n\nindex.md right now:\n\n" + self.wiki.read("index.md")
+        questions = self.wiki.open_questions()
+        if questions:
+            text += f"\nOpen questions the wiki is waiting on (questions.md):\n{questions}\n"
+        if self.last_lint_report:
+            text += (
+                "\nThe latest lint report, which the user has seen:\n"
+                f"{self.last_lint_report[:MAX_REPORT_CHARS]}\n"
+            )
         pending = self.wiki.pending_raw()[-MAX_PENDING_SHOWN:]
         if pending:
             text += (
@@ -314,7 +345,8 @@ class Assistant:
         if not self.wiki:
             raise RuntimeError("The wiki is off (PKM_WIKI_DIR=off); nothing to lint.")
         with self.wiki.journal("lint", "lint pass"):
-            return self._maintain(self._lint_message(), label="lint")
+            reply = self._maintain(self._lint_message(), label="lint", model=self.settings.lint_model)
+        return self._lint_report(reply)
 
     def queue_lint(self) -> None:
         """Lint on the worker, behind any wiki updates already waiting, so
@@ -325,18 +357,52 @@ class Assistant:
 
     def _lint_message(self) -> str:
         prompt = (
-            "Lint the wiki. `wiki_read` `lint-checklist.md` and work through it: read "
-            "`index.md`, list every file (path 'LIST') and read the pages. Raw sources "
-            "listed below as not yet ingested are not your concern here. Fix what is "
-            "safe to fix, then `wiki_log` the pass. Reply with a short report: what you "
-            "fixed, then what needs the user's decision."
+            "Lint the wiki. `wiki_read` `lint-checklist.md` and `questions.md` and work "
+            "through the checklist: read `index.md`, list every file (path 'LIST') and "
+            "read the pages. Raw sources listed below as not yet ingested are not your "
+            "concern here. Fix everything the rules let you decide, then `wiki_log` the "
+            "pass. Reply with a short report: what you fixed, then only the questions "
+            "you added to `questions.md` in this pass (don't repeat older ones; just "
+            "say how many are still open)."
         )
+        found = check(self.wiki)
+        if found:
+            prompt += (
+                "\n\nThe mechanical items (links, index, orphans, frontmatter, citations, "
+                "titles) were checked exactly by code. These are all of them; fix each "
+                "one and don't look for more of that kind:\n" + "\n".join(f"- {f}" for f in found)
+            )
+        else:
+            prompt += (
+                "\n\nThe mechanical items (links, index, orphans, frontmatter, citations, "
+                "titles) were checked exactly by code and are all fine: skip them."
+            )
         pending = self.wiki.pending_raw()
         if pending:
             prompt += "\n\nNot yet ingested:\n" + "\n".join(f"- {p}" for p in pending)
         return prompt
 
-    def _maintain(self, prompt: str | list[dict], label: str) -> str:
+    def _lint_report(self, reply: str) -> str:
+        """Claude's report, plus whatever the code checks still find after
+        its fixes. Kept for the chat's next turns."""
+        left = check(self.wiki)
+        if left:
+            reply += "\n\nStill failing the code checks after this pass:\n" + "\n".join(f"- {f}" for f in left)
+        self.last_lint_report = reply
+        return reply
+
+    def _questions_note(self) -> str:
+        """Added to a capture's or an instruction's job, so an answer the
+        user gives in passing closes the question it settles."""
+        questions = self.wiki.open_questions()
+        if not questions:
+            return ""
+        return (
+            "\n\nOpen questions in `questions.md`. If this settles one, apply the answer "
+            f"to the pages and move it under Answered:\n{questions}"
+        )
+
+    def _maintain(self, prompt: str | list[dict], label: str, model: str | None = None) -> str:
         """One maintenance conversation: Claude with the wiki write tools."""
         return self._converse(
             prompt,
@@ -347,7 +413,7 @@ class Assistant:
             label=label,
             system=MAINTAIN_SYSTEM + self.wiki.schema() + everyday_context(self.settings),
             tools=WIKI_TOOLS,
-            model=self.settings.wiki_model,
+            model=model or self.settings.wiki_model,
         )
 
     def _converse(
@@ -361,10 +427,12 @@ class Assistant:
         system: str,
         tools: list[dict],
         model: str | None = None,
+        instructions: list[str] | None = None,
     ) -> str:
         """Run one user turn. `remember` appends each fact to `saved`, and
         saves `text` as a raw wiki source (appending its path to `raw`) unless
-        `raw` already has one."""
+        `raw` already has one. `instruct` appends to `instructions` and saves
+        the raw source the same way."""
         history.append({"role": "user", "content": text})
 
         def execute(name: str, args: dict) -> str:
@@ -383,6 +451,14 @@ class Assistant:
                             raw.append(self.wiki.save_raw(text))
                         result += f" Raw source saved as {raw[0]}."
                     return result
+                if name == "instruct" and instructions is not None and self.wiki:
+                    instructions.append(args["instruction"])
+                    if not raw:
+                        raw.append(self.wiki.save_raw(text))
+                    return (
+                        "Passed on. It will be carried out in the background and the "
+                        "outcome shown to the user when it is done."
+                    )
                 if name == "rewind":
                     return self.rewind()
                 if name == "lint":
@@ -420,6 +496,8 @@ class Assistant:
             return self.wiki.list_pages() if args["path"] == "LIST" else self.wiki.read(args["path"])
         if name == "wiki_write":
             return self.wiki.write(args["path"], args["content"])
+        if name == "wiki_delete":
+            return self.wiki.delete(args["path"])
         if name == "wiki_log":
             return self.wiki.log(args["kind"], args["title"], args["body"])
         raise ValueError(f"Unknown tool {name!r}")
@@ -450,7 +528,7 @@ class Assistant:
             return self.lint()
         raise ValueError(f"Unknown MCP tool: {name!r}")
 
-    def _queue_wiki_job(self, job: WikiJob | IngestJob | LintJob) -> None:
+    def _queue_wiki_job(self, job: WikiJob | IngestJob | LintJob | InstructJob) -> None:
         self.wiki_jobs += 1
         if not self.background:
             self._run_wiki_job(job)
@@ -467,16 +545,21 @@ class Assistant:
             finally:
                 self._wiki_queue.task_done()  # `rewind` and `delete_all` join the queue
 
-    def _run_wiki_job(self, job: WikiJob | IngestJob | LintJob) -> None:
-        """Update the wiki for a chat capture, ingest a file the user asked
-        for, or lint: a separate Claude conversation with the wiki tools. Its
-        outcome is reported as a notice. If an ingest fails, the raw source
-        stays pending, to be retried by /ingest or `pkm-ingest`."""
+    def _run_wiki_job(self, job: WikiJob | IngestJob | LintJob | InstructJob) -> None:
+        """Update the wiki for a chat capture, carry out an instruction,
+        ingest a file the user asked for, or lint: a separate Claude
+        conversation with the wiki tools. Its outcome is reported as a
+        notice. If an ingest fails, the raw source stays pending, to be
+        retried by /ingest or `pkm-ingest`."""
         asked_for = not isinstance(job, WikiJob)
+        model = self.settings.wiki_model
         if isinstance(job, LintJob):
             raw, kind, title, delete_raw = None, "lint", "lint pass", False
-        elif asked_for:
+            model = self.settings.lint_model
+        elif isinstance(job, IngestJob):
             raw, kind, title, delete_raw = job.rel, "ingest", job.rel, self.wiki.is_capture(job.rel)
+        elif isinstance(job, InstructJob):
+            raw, kind, title, delete_raw = f"{job.raw}.md", "edit", job.instructions[0], True
         else:
             raw, kind, title, delete_raw = f"{job.raw}.md", "capture", job.facts[0], True
         self._working_on = (raw or "a lint pass", time.monotonic())
@@ -485,27 +568,21 @@ class Assistant:
             self.wiki.journal(kind, title, raw=raw, delete_raw=delete_raw),
         ):
             try:
-                if raw is None:
-                    message = self._lint_message()
-                elif asked_for:
-                    message = self._ingest_message(job.rel, job.guidance)
-                else:
-                    facts = "\n".join(f"- {f}" for f in job.facts)
-                    message = f"Ingest the raw source `{job.raw}`. The facts it states:\n{facts}"
                 reply = run_turn(
                     self.client,
                     self.settings,
-                    [{"role": "user", "content": message}],
+                    [{"role": "user", "content": self._job_message(job)}],
                     lambda name, args: self._wiki_tool(name, args),
                     MAINTAIN_SYSTEM + self.wiki.schema() + everyday_context(self.settings),
                     WIKI_TOOLS,
-                    self.settings.wiki_model,
+                    model,
                 )
                 if raw is None:
-                    outcome, failed = f"Lint report (/rewind takes its fixes back):\n{reply}", False
+                    report = self._lint_report(reply)
+                    outcome, failed = f"Lint report (/rewind takes its fixes back):\n{report}", False
                 else:
                     self.wiki.mark_ingested(raw)
-                    done = "Ingested " + raw if asked_for else "Wiki updated"
+                    done = {"ingest": "Ingested " + raw, "edit": "Wiki changed"}.get(kind, "Wiki updated")
                     outcome, failed = f"{done}: {reply}", False
             except Exception as e:
                 if raw is None:
@@ -517,6 +594,24 @@ class Assistant:
                     )
         self._working_on = None
         self._wiki_notices.put(Notice(outcome, failed, t, asked_for))
+
+    def _job_message(self, job: WikiJob | IngestJob | LintJob | InstructJob) -> str | list[dict]:
+        if isinstance(job, LintJob):
+            return self._lint_message()
+        if isinstance(job, IngestJob):
+            return self._ingest_message(job.rel, job.guidance)
+        facts = "\n".join(f"- {f}" for f in job.facts)
+        if isinstance(job, InstructJob):
+            message = (
+                f"Carry out what the user asked, saved as the raw source `{job.raw}`:\n"
+                + "\n".join(f"- {i}" for i in job.instructions)
+            )
+            if facts:
+                message += f"\n\nThe facts it also states:\n{facts}"
+            message += "\n\nReply with one short line saying what you changed, or why you couldn't."
+        else:
+            message = f"Ingest the raw source `{job.raw}`. The facts it states:\n{facts}"
+        return message + self._questions_note()
 
 
 def _index_of(history: list[dict], message: dict) -> int:

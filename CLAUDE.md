@@ -49,8 +49,10 @@ uv run llm-pkm --timing # also print how long each step took
                         # in the chat: /ingest (add a file from raw/), /lint, /status,
                         # /rewind (undo the last stored change), /delete-all
 uv run llm-pkm --notices # also show how background wiki updates ended (failures always show)
+uv run llm-pkm --script prompts.txt  # feed a text file in, one entry per line, then exit
 uv run pkm-ingest       # ingest every new .md/.txt/.pdf in data/wiki/raw/ (--dry-run to just list them)
 uv run pkm-lint         # health-check the wiki against its lint-checklist.md
+uv run pkm-lint --check # only the checks done in code: no Claude call, nothing changed
 uv run pkm-timings      # median/max time per step, from data/timings.jsonl
 ```
 
@@ -115,7 +117,10 @@ Layout (`src/llm_pkm/`):
 - `wiki.py`: the wiki layer (Karpathy's pattern): a folder of markdown files,
   an Obsidian vault, that Claude maintains through `wiki_read`, `wiki_write`
   and `wiki_log` tools. `wiki_read` takes a path or a page title, resolved
-  like an Obsidian link. `remember` saves each message as an immutable file
+  like an Obsidian link; it also reads a .txt file in `raw/`, and 'LIST'
+  includes the .txt and .pdf sources there (fixed 2026-10-09: lint kept
+  reporting an ingested .txt source as missing because both handled only
+  .md). `remember` saves each message as an immutable file
   in `raw/`. The live vault is `data/wiki/` (git-ignored: real personal
   data). `wiki-example/` is the tracked template with invented sample data.
   A new vault is seeded from it with `SCHEMA.md` (the rules Claude is
@@ -144,10 +149,27 @@ Layout (`src/llm_pkm/`):
   plainly contradicts general knowledge. For a capture that goes through
   `remember`'s `doubt` field (the fact is saved as said; `run_turn` adds
   the doubt to "Got it." without a second Claude call). The CLI prints
-  everything from the marker (`OUTSIDE` in `llm.py`) to the end of the
-  line in bright blue, so each such statement must be on its own line.
+  everything from the marker (`OUTSIDE` in `llm.py`) to the end of its
+  paragraph (the next blank line) in bright blue, so each such statement
+  must start on its own line. The user confirmed this design 2026-10-09:
+  world knowledge is welcome when the wiki lacks it, clearly labeled and
+  in blue.
   Tried for real: "Lisbon, the capital of Spain" got the blue correction,
   and the page recorded the claim as written with a question for the user.
+- **Any subject is accepted (decided 2026-10-09):** the memory is not
+  limited to facts about the user. A statement of general knowledge the
+  user enters (a scientist's biography, say) is saved like any other
+  fact, phrased about its own subject, without comment. Sources-only still
+  holds in the other direction: Claude adds nothing of its own. Why: a
+  real run on Haiku refused a paragraph about Max Planck as "general
+  knowledge, not something about you". Prompt wording only
+  (`WIKI_CHAT_SYSTEM`, the `remember` tool, the MCP `remember`
+  docstring). A first, milder rewording did not stop the refusal; what
+  worked was dropping "personal memory" from the opening line and adding
+  the "question, request, or something to save" rule above the bullets.
+  Real runs 2026-10-09 on throwaway vaults: the Planck paragraph was
+  saved in 4 of 4 tries, and a question the wiki couldn't answer still
+  got "I don't have that" plus a "Not from your wiki:" line.
 - **Obsidian:** page frontmatter must be valid YAML for the Properties
   panel: `sources` is a list of quoted links (`- "[[raw/...]]"`); a bare
   `[[link]]` there is read as a nested list. Page titles are filenames and
@@ -171,6 +193,43 @@ Layout (`src/llm_pkm/`):
   `lint-checklist.md`; no code checks links or orphans yet. First real run
   2026-10-08 on a 5-page throwaway vault: 58 s, sensible fixes and
   questions.
+- **Decide, don't ask (decided 2026-10-09):** the user wants the wiki kept
+  up without being consulted. Five pieces, after a lint pass on the live
+  vault came back with seven questions:
+  - *Standing rulings* in `SCHEMA.md` ("Decide, don't ask") and the lint
+    checklist: make a page for anything a source names, even a one-line
+    stub (the user: "create pages, even empty ones, when in doubt"); how to
+    write a date with no year, a shared nickname, an unexpanded
+    abbreviation; gaps are left alone. A question is allowed only when two
+    sources flatly contradict and neither is newer, or a fix would delete
+    something a source states.
+  - *`questions.md`* at the vault root: each question is written there once,
+    numbered, under Open, and moved to Answered when a source or
+    instruction settles it; nothing listed is asked again. The open ones
+    are put in chat's system prompt and in every capture's and
+    instruction's job message (`Wiki.open_questions`).
+  - *`instruct`*, a chat tool: "rename that page", "change the heading to
+    X", or an answer to a question. The message is saved as a raw source
+    and queued as an `InstructJob` (log kind `edit`, notice "Wiki
+    changed: ..."), rewindable like a capture. Maintenance also got
+    `wiki_delete` (pages under `wiki/` only), so it can merge and rename.
+    Chat is also given the last lint report (in memory only, lost on
+    restart) and told never to guess at causes; it had invented "a sync
+    issue".
+  - *Code checks* (`checks.py`): broken links, pages missing from the index
+    or linked from nowhere, frontmatter, uncited pages, duplicate titles
+    and misplaced files are found exactly in Python and handed to the lint
+    conversation; whatever still fails afterwards is appended to the
+    report. Links resolve as in Obsidian, so a non-.md source must be
+    linked with its extension.
+  - *`PKM_LINT_MODEL`*: lint's own model, default the wiki model. The live
+    `.env` uses `claude-haiku-5-5` for updates and `claude-sonnet-5-5` for
+    lint.
+  Real run 2026-10-09 on a throwaway vault (7 script lines, 128 s): stubs
+  were made for a school and a club mentioned once, a shared nickname got
+  "not to be confused" notes, a rename instruction was carried out, and
+  two Sonnet lint passes (10 s each) asked nothing. Not yet seen: a real
+  contradiction producing a question, or an answer closing one.
 - **Rewind:** every change to the wiki (a capture's update, an ingest, a
   lint pass) runs inside `Wiki.journal`, which records the earlier content
   of each page it writes and the log's length in the vault's hidden
@@ -195,6 +254,17 @@ Layout (`src/llm_pkm/`):
   set the chat asks for it at startup and saves it there (`pkm-ingest` and
   `pkm-lint` don't ask). The chat prompt also tells Claude to turn "next
   Tuesday" into the actual date when saving a fact.
+- **Scripts:** `--script FILE` (`run_script` in `cli.py`) sends each line
+  of a text file as if typed, and waits for that entry's wiki update,
+  ingest or lint (up to `SCRIPT_WAIT`, 15 minutes) before the next, printing
+  every outcome with its time, then a count of problems by line number.
+  Blank lines and `#` lines are skipped and `quit` stops early. Nothing can
+  be asked mid-script: `/ingest` takes no guidance and needs a file name if
+  several are pending, and `/delete-all` is refused. Lines share one session
+  history, as in a typed chat. First real run 2026-10-09 on the live
+  vault: 22 entries in 735 s, 20 wiki updates; the last two failed because
+  the Anthropic account hit its monthly usage limit, and the script kept
+  going rather than stopping.
 - `config.py`: all settings from env vars (see `.env.example`).
 - `timing.py`: per-step timings. Code wraps a step in `span("name")`; the
   CLI prints each message's breakdown with `--timing`, and every message is
@@ -228,7 +298,8 @@ Things we learned (most of these are about the on-hold vector path):
   against 0.48 for the next fact.
 - **Model:** chat turns use `claude-haiku-4-5-20251001` (`PKM_MODEL`; the
   user waits for these); wiki updates and file ingest use `claude-opus-5`
-  (`PKM_WIKI_MODEL`; background, so quality over speed). Effort `low`
+  (`PKM_WIKI_MODEL`; background, so quality over speed; the live `.env`
+  overrides it with `claude-haiku-5-5` since 2026-10-09, for cost). Effort `low`
   (`PKM_EFFORT`) and the server-side refusal fallback are sent only to
   non-Haiku models. Haiku was chosen for speed and is untested for quality:
   if it misjudges fact vs. question, set `PKM_MODEL=claude-opus-5`.

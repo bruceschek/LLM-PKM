@@ -14,6 +14,10 @@ finishes, by a watcher thread, even while the prompt is waiting (with
 user asked for (/ingest) are shown. `/status` says what is running now.
 Timings are logged to data/timings.jsonl either way.
 
+`--script FILE` feeds a text file in instead of the keyboard: one entry per
+line, each waiting for the wiki to finish absorbing the one before
+(`run_script`).
+
 Everything the program says is in one color and what the user types in
 another (`say` and `read`), when the output is a terminal and NO_COLOR is
 unset."""
@@ -23,6 +27,8 @@ import difflib
 import os
 import sys
 import threading
+import time
+from pathlib import Path
 
 import anthropic
 import httpx
@@ -49,14 +55,22 @@ def say(text: str = "", color: str = REPLY, reset: bool = True, **kwargs) -> Non
 
 def say_reply(reply: str) -> None:
     """Print Claude's reply. Anything from the "Not from your wiki:" marker
-    to the end of its line is general knowledge, shown in its own color."""
+    to the end of its paragraph (the next blank line) is general knowledge,
+    shown in its own color; that covers an answer Claude spread over
+    several lines or a list."""
     from .llm import OUTSIDE
 
-    lines = []
+    lines, outside = [], False
     for line in f"pkm> {reply}".split("\n"):
+        if not line.strip():
+            outside = False
+        elif outside and colored():
+            line = f"{OUTSIDE_COLOR}{line}{REPLY}"
         before, marker, after = line.partition(OUTSIDE)
-        if marker and colored():
-            line = f"{before}{OUTSIDE_COLOR}{marker}{after}{REPLY}"
+        if marker and not outside:
+            outside = True
+            if colored():
+                line = f"{before}{OUTSIDE_COLOR}{marker}{after}{REPLY}"
         lines.append(line)
     say("\n".join(lines))
 
@@ -82,7 +96,15 @@ def main() -> None:
         action="store_true",
         help="show how each background save and wiki update ended (failures always show)",
     )
+    parser.add_argument(
+        "--script",
+        metavar="FILE",
+        type=Path,
+        help="feed FILE in, one entry per line, waiting for the wiki after each; then exit",
+    )
     args = parser.parse_args()
+    if args.script and not args.script.is_file():
+        parser.error(f"no such file: {args.script}")
 
     load_dotenv()
     from .core import Assistant  # after load_dotenv, so settings see .env
@@ -99,6 +121,12 @@ def main() -> None:
     )
     if assistant.wiki:
         say(f"Wiki: {assistant.wiki.root.resolve()} (in Obsidian: Open folder as vault)")
+    if args.script:
+        try:
+            run_script(assistant, history, args)
+        finally:
+            finish(assistant, args)
+        return
     say("Commands: /ingest (add a file from raw/), /lint (health-check the wiki), /status (what")
     say("          is running), /rewind (take back the last thing stored), /delete-all (erase everything)")
     stop = threading.Event()
@@ -153,38 +181,91 @@ def chat(assistant, history: list[dict], args) -> None:
             continue
         if text.lower() in {"quit", "exit"}:
             return
-        if text.lower() in {"/rewind", "rewind", "/undo"}:
-            say(f"pkm> {assistant.rewind()}")
-            continue
-        if text.lower().split()[0] == "/ingest":
-            ingest(assistant, text[len("/ingest") :].strip())
-            continue
-        if text.lower() == "/status":
-            say(f"pkm> {assistant.status()}")
-            continue
-        if text.lower() == "/lint":
-            lint(assistant)
-            continue
-        if text.lower() in {"/delete-all", "/delete all", "/deleteall"}:
-            delete_all(assistant, history)
-            continue
-        if text.startswith("/"):  # a mistyped command must not go to Claude as a message
-            word = text.split()[0]
-            close = difflib.get_close_matches(word.lower(), COMMANDS, n=1, cutoff=0.5)
-            hint = f" Did you mean {close[0]}?" if close else ""
-            say(f"pkm> There is no {word} command.{hint} Commands: {', '.join(COMMANDS)}")
-            continue
-        try:
-            reply = assistant.handle_message(text, history)
-        except anthropic.APIStatusError as e:
-            reply = f"[Claude API error {e.status_code}: {e.message}]"
-            history.clear()  # a half-finished turn would break the next request
-        except (anthropic.APIConnectionError, httpx.HTTPError) as e:
-            reply = f"[network error: {e}]"
-            history.clear()
-        say_reply(reply)
-        if args.timing and assistant.last_turn:
-            say(assistant.last_turn.report())
+        handle(assistant, history, args, text)
+
+
+def handle(assistant, history: list[dict], args, text: str, scripted: bool = False) -> bool:
+    """One entry: a command or a message for Claude. False if it failed.
+    `scripted` means nobody is there to answer a follow-up question."""
+    if text.lower() in {"/rewind", "rewind", "/undo"}:
+        say(f"pkm> {assistant.rewind()}")
+        return True
+    if text.lower().split()[0] == "/ingest":
+        return ingest(assistant, text[len("/ingest") :].strip(), scripted)
+    if text.lower() == "/status":
+        say(f"pkm> {assistant.status()}")
+        return True
+    if text.lower() == "/lint":
+        return lint(assistant)
+    if text.lower() in {"/delete-all", "/delete all", "/deleteall"}:
+        if scripted:  # the typed DELETE is the safeguard, and a file can't give it
+            say("pkm> /delete-all only works typed in the chat. Nothing was deleted.")
+            return False
+        delete_all(assistant, history)
+        return True
+    if text.startswith("/"):  # a mistyped command must not go to Claude as a message
+        word = text.split()[0]
+        close = difflib.get_close_matches(word.lower(), COMMANDS, n=1, cutoff=0.5)
+        hint = f" Did you mean {close[0]}?" if close else ""
+        say(f"pkm> There is no {word} command.{hint} Commands: {', '.join(COMMANDS)}")
+        return False
+    failed = True
+    try:
+        reply = assistant.handle_message(text, history)
+        failed = False
+    except anthropic.APIStatusError as e:
+        reply = f"[Claude API error {e.status_code}: {e.message}]"
+        history.clear()  # a half-finished turn would break the next request
+    except (anthropic.APIConnectionError, httpx.HTTPError) as e:
+        reply = f"[network error: {e}]"
+        history.clear()
+    say_reply(reply)
+    if args.timing and assistant.last_turn:
+        say(assistant.last_turn.report())
+    return not failed
+
+
+SCRIPT_WAIT = 900  # seconds a script waits for one entry's background work (a long PDF ingest)
+
+
+def run_script(assistant, history: list[dict], args) -> None:
+    """--script: feed a text file in, one entry per line, as if typed. Each
+    entry's background work (the wiki update, an ingest, a lint pass) is
+    waited for and its outcome printed before the next line is sent, so
+    every entry meets a wiki that has absorbed the ones before it. Blank
+    lines and lines starting with # are skipped; `quit` stops early."""
+    entries = [
+        (number, line.strip())
+        for number, line in enumerate(args.script.read_text().split("\n"), 1)
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+    say(f"Script: {args.script} ({len(entries)} entries)")
+    began = time.monotonic()
+    done, updates, problems = 0, 0, []
+    for number, text in entries:
+        if text.lower() in {"quit", "exit"}:
+            break
+        say(f"\n[{done + 1}/{len(entries)}, line {number}] you> {text}", color=USER)
+        ok = handle(assistant, history, args, text, scripted=True)
+        waited = time.monotonic()
+        notices = assistant.wait_for_saves(SCRIPT_WAIT)
+        for notice in notices:
+            say(f"[{'FAILED' if notice.failed else 'wiki'}, {notice.turn.seconds:.0f} s] {notice.message}")
+            if args.timing:
+                say(notice.turn.report())
+        timed_out = assistant.pending_notices() > 0
+        if timed_out:
+            say(f"[still running after {time.monotonic() - waited:.0f} s; going on without it]")
+        done += 1
+        updates += sum(not n.failed for n in notices)
+        if not ok or timed_out or any(n.failed for n in notices):
+            problems.append(number)
+    say(
+        f"\nScript done: {done} of {len(entries)} entries, {updates} wiki update(s), "
+        f"{len(problems)} problem(s), {time.monotonic() - began:.0f} s."
+    )
+    if problems:
+        say(f"Problems at line(s): {', '.join(map(str, problems))}")
 
 
 def ask(prompt: str) -> str | None:
@@ -196,25 +277,30 @@ def ask(prompt: str) -> str | None:
         return None
 
 
-def ingest(assistant, name: str) -> None:
+def ingest(assistant, name: str, scripted: bool = False) -> bool:
     """/ingest [file]: pick one of the new files in raw/ (asked if there are
     several and none was named), ask what the user wants kept from it, and
-    queue it. The result is shown when it finishes, after a later entry."""
+    queue it. The result is shown when it finishes, after a later entry.
+    From a script nothing is asked: the file must be named unless there is
+    only one, and Claude decides what to keep. False if nothing was queued."""
     if not assistant.wiki:
         say("pkm> The wiki is off, so there is nothing to ingest into.")
-        return
+        return False
     pending = assistant.wiki.pending_raw()
     raw_dir = assistant.wiki.root.resolve() / "raw"
     if not pending:
         say(f"pkm> No new files. Put a .md, .txt or .pdf file in {raw_dir} first.")
-        return
+        return False
     if name:
         chosen = [p for p in pending if name in (p, p.removeprefix("raw/"))]
         if not chosen:
             say(f"pkm> No new file called {name!r}. New files: {', '.join(pending)}")
-            return
+            return False
     elif len(pending) == 1:
         chosen = pending
+    elif scripted:
+        say(f"pkm> Several new files; name one after /ingest: {', '.join(pending)}")
+        return False
     else:
         say("New files in raw/:")
         for i, rel in enumerate(pending, 1):
@@ -226,23 +312,24 @@ def ingest(assistant, name: str) -> None:
             chosen = [pending[int(answer) - 1]]
         else:
             say("pkm> Nothing ingested.")
-            return
+            return False
     guidance = None
-    if len(chosen) == 1:
+    if len(chosen) == 1 and not scripted:
         say(f"Ingesting {chosen[0]}. What is it, and what should I keep from it?")
         guidance = ask("(optional; Enter to let me decide): ")
         if guidance is None:
             say("pkm> Nothing ingested.")
-            return
+            return False
     try:
         for rel in chosen:
             assistant.queue_ingest(rel, guidance or None)
     except RuntimeError as e:
         say(f"pkm> {e}")
-        return
+        return False
     count = "it" if len(chosen) == 1 else f"each of the {len(chosen)} files"
     say(f"pkm> Started. Keep going; I'll say what {count} added as soon as it's done.")
     say("     A long file can take a few minutes; /status shows what is running.")
+    return True
 
 
 def delete_all(assistant, history: list[dict]) -> None:
@@ -264,14 +351,16 @@ def delete_all(assistant, history: list[dict]) -> None:
     say(f"pkm> {assistant.delete_all(history)}")
 
 
-def lint(assistant) -> None:
-    """/lint: start a health check of the wiki in the background."""
+def lint(assistant) -> bool:
+    """/lint: start a health check of the wiki in the background. False if
+    it couldn't start."""
     try:
         assistant.queue_lint()
     except RuntimeError as e:
         say(f"pkm> {e}")
-        return
+        return False
     say("pkm> Lint started. Keep going; the report will appear here when it's done.")
+    return True
 
 
 def finish(assistant, args) -> None:
